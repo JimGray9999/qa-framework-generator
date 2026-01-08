@@ -194,8 +194,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **Jim Gray** - QA Engineer
 
-- Twitter: [@harleygusgus](https://twitter.com/harleygusgus)
-- LinkedIn: [Connect with me](https://linkedin.com/in/yourprofile)
+- LinkedIn: [Connect with me](https://linkedin.com/in/jgray00)
 
 ---
 
