@@ -2,7 +2,41 @@
 
 An AI-powered web application that generates complete test automation frameworks and executes them in real-time. Point it at any website, select your language and framework, and watch as Claude AI creates a professional test suite that you can run instantly.
 
-![QA Framework Generator](https://img.shields.io/badge/AI-Powered-purple) ![Docker](https://img.shields.io/badge/Docker-Ready-blue) ![License](https://img.shields.io/badge/License-MIT-green)
+![AI-Powered](https://img.shields.io/badge/AI-Powered-purple) ![Docker](https://img.shields.io/badge/Docker-Ready-blue) ![License](https://img.shields.io/badge/License-MIT-green)
+
+## Demo
+
+<!-- Replace VIDEO_ID with your actual video asset ID after uploading -->
+<!-- To add video: drag and drop MP4 into GitHub issue/PR, copy the URL, paste here -->
+
+https://github.com/user-attachments/assets/VIDEO_ID_HERE
+
+> *Click to watch the full demo (90 seconds)*
+
+## Screenshots
+
+### Full Application View
+<!-- Replace with actual screenshot -->
+![Full App](./screenshots/full-app.png)
+
+*Three-panel layout: Configuration, IDE-style code viewer, and test report*
+
+### Generated Code with IDE Viewer
+![Code Viewer](./screenshots/code-viewer.png)
+
+*Browse generated files with folder structure, line numbers, and syntax highlighting*
+
+### Live Test Report
+![Test Report](./screenshots/test-report.png)
+
+*Allure-style test report with pass/fail metrics and expandable error details*
+
+### Browser & Headed Mode Options
+![Config Options](./screenshots/config-options.png)
+
+*Choose your browser (Chromium, Firefox, WebKit) and toggle headed mode to watch tests run*
+
+---
 
 ## Features
 
@@ -13,13 +47,9 @@ An AI-powered web application that generates complete test automation frameworks
 - **Visual Test Reports**: Allure-style test reports with pass/fail metrics, duration, and expandable error details
 - **Browser Selection**: Choose between Chromium, Firefox, or WebKit (Safari)
 - **Headed/Headless Mode**: Watch tests run in a browser or run silently in the background
-- **IDE-Style Code Viewer**: Browse generated files with syntax highlighting and line numbers
+- **IDE-Style Code Viewer**: Browse generated files with folder tree, line numbers, and syntax awareness
 - **Download as ZIP**: Export your generated framework to use in your own projects
 - **Docker Ready**: Fully containerized for consistent environments
-
-## Screenshots
-
-*Coming soon*
 
 ## Quick Start
 
@@ -32,7 +62,7 @@ An AI-powered web application that generates complete test automation frameworks
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/qa-framework-generator.git
+   git clone https://github.com/JimGray9999/qa-framework-generator.git
    cd qa-framework-generator
    ```
 
@@ -62,6 +92,8 @@ An AI-powered web application that generates complete test automation frameworks
    - Select a programming language (Python, Java, JavaScript)
    - Choose a testing framework (Playwright, Selenium, etc.)
    - Enter the target website URL
+   - Pick your browser (Chromium, Firefox, WebKit)
+   - Toggle headed mode if you want to watch tests run
 
 2. **Generate the framework**
    - Click "Generate Framework"
@@ -70,13 +102,13 @@ An AI-powered web application that generates complete test automation frameworks
 3. **Review the code**
    - Browse generated files in the IDE-style viewer
    - Files are organized by folder (pages/, tests/)
+   - Line numbers included for easy reference
 
 4. **Run the tests**
-   - Select your browser (Chromium, Firefox, WebKit)
-   - Toggle headed mode to watch tests run (or keep headless for speed)
    - Click "Run Tests" and watch real-time output
+   - See live progress as each test executes
 
-5. **View results**
+5. **View results & export**
    - See pass/fail metrics in the visual report
    - Expand individual tests to see error details
    - Download the framework as a ZIP for your own projects
@@ -86,15 +118,36 @@ An AI-powered web application that generates complete test automation frameworks
 ```
 qa-framework-generator/
 ├── src/
-│   └── App.jsx           # React frontend component
+│   ├── App.jsx           # React frontend component
+│   └── main.jsx          # React entry point
 ├── server.js             # Express backend server
+├── index.html            # HTML template
+├── vite.config.js        # Vite build configuration
 ├── Dockerfile            # Docker container configuration
 ├── docker-compose.yml    # Docker Compose orchestration
 ├── package.json          # Node.js dependencies
-├── vite.config.js        # Vite build configuration
 ├── .env.example          # Environment variables template
 └── README.md
 ```
+
+## Tech Stack
+
+| Category | Technologies |
+|----------|--------------|
+| **Frontend** | React 18, Vite, Custom CSS |
+| **Backend** | Node.js, Express, Server-Sent Events |
+| **AI** | Anthropic Claude API |
+| **Testing** | Playwright, pytest, pytest-json-report |
+| **DevOps** | Docker, Docker Compose, Xvfb |
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/generate` | POST | Generate test framework using Claude AI |
+| `/api/run-tests` | POST | Execute tests and stream results via SSE |
+| `/api/download-zip` | POST | Download generated files as ZIP |
+| `/api/health` | GET | Health check endpoint |
 
 ## Development
 
@@ -111,15 +164,6 @@ qa-framework-generator/
    ```
    This runs both the Vite dev server (frontend) and Express server (backend) concurrently.
 
-3. **Or run them separately**
-   ```bash
-   # Terminal 1 - Frontend
-   npm run dev
-   
-   # Terminal 2 - Backend
-   npm run dev:server
-   ```
-
 ### Environment Variables
 
 | Variable | Description | Required |
@@ -127,48 +171,6 @@ qa-framework-generator/
 | `ANTHROPIC_API_KEY` | Your Anthropic API key | Yes |
 | `PORT` | Server port (default: 3001) | No |
 | `NODE_ENV` | Environment (production/development) | No |
-
-## Tech Stack
-
-**Frontend**
-- React 18
-- Vite
-- Custom CSS (no framework)
-
-**Backend**
-- Node.js
-- Express
-- Anthropic Claude API
-- Server-Sent Events (SSE) for streaming
-
-**Testing Infrastructure**
-- Python virtual environments
-- Playwright (with Chromium, Firefox, WebKit)
-- pytest with JSON reporting
-- Xvfb for headed mode in Docker
-
-**DevOps**
-- Docker & Docker Compose
-- Multi-stage builds
-
-## API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/generate` | POST | Generate test framework using Claude AI |
-| `/api/run-tests` | POST | Execute tests and stream results via SSE |
-| `/api/download-zip` | POST | Download generated files as ZIP |
-| `/api/health` | GET | Health check endpoint |
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
 
 ## Roadmap
 
@@ -179,6 +181,16 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - [ ] Test history and comparison
 - [ ] Custom prompt templates
 - [ ] CI/CD pipeline templates
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
 ## License
 
@@ -192,10 +204,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Author
 
-**Jim Gray** - QA Engineer
+**Jim Gray** - QA Engineer with 7 years of automation testing experience
 
 - LinkedIn: [Connect with me](https://linkedin.com/in/jgray00)
 
 ---
 
-Built with Claude AI and a lot of ☕
+Built with [Claude AI](https://claude.ai) and a lot of ☕
