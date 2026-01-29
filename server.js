@@ -25,6 +25,86 @@ if (process.env.NODE_ENV === 'production') {
 
 const client = new Anthropic();
 
+// Build language-specific file list and rules for the generation prompt
+function getLanguagePrompt(language, targetUrl) {
+  const lang = (language || 'python').toLowerCase();
+  if (lang === 'c#' || lang === 'csharp') {
+    return {
+      fileList: `Generate these files (keep code concise):
+1. .csproj - SDK-style project with Playwright and NUnit (or xUnit) packages
+2. Page object .cs files in Pages/ - 2-3 page classes for this site
+3. Test .cs files in Tests/ - 2 test files with 2 tests each using NUnit [Test] (or xUnit [Fact])`,
+      rules: `CRITICAL RULES for C#:
+- Use Microsoft.Playwright and NUnit (or xUnit). Use synchronous API: Page, IBrowserContext, etc.
+- Page object constructors take IPage and base URL; expose IsLoaded() that returns bool using defensive checks
+- Tests use [Test] and [SetUp] / [OneTimeSetUp] (NUnit) or [Fact] and IClassFixture (xUnit)
+- Base URL for tests: "${targetUrl}"
+- Use the REAL selectors from the page analysis above
+- For IsLoaded(): check page.TitleAsync() or page.Url contains expected text, or locator.CountAsync() > 0
+- Do NOT assume credentials; do NOT interact with cookie banners or modals
+- Keep tests SIMPLE: verify page loads, title, key navigation
+- Use locator.First when multiple matches possible; prefer data-testid, aria-label, or CSS selectors`
+    };
+  }
+  if (lang === 'java') {
+    return {
+      fileList: `Generate these files (keep code concise):
+1. pom.xml - Maven with Playwright and JUnit 5
+2. Page object .java files in src/main/java/pages/ - 2-3 page classes
+3. Test .java files in src/test/java/ - 2 test classes with 2 tests each`,
+      rules: `CRITICAL RULES for Java:
+- Use com.microsoft.playwright and JUnit 5. Use synchronous Playwright API.
+- Page objects take Page and base URL; isLoaded() returns boolean with defensive checks
+- Base URL: "${targetUrl}"
+- Use the REAL selectors from the page analysis above
+- Do NOT assume credentials; do NOT interact with cookie banners or modals
+- Keep tests SIMPLE; prefer data-testid, aria-label, or CSS selectors`
+    };
+  }
+  if (lang === 'javascript') {
+    return {
+      fileList: `Generate these files (keep code concise):
+1. package.json - with @playwright/test (or playwright and mocha/jest)
+2. Page object .js or .ts files in pages/ - 2-3 page classes
+3. Test files in tests/ - 2 test files with 2 tests each`,
+      rules: `CRITICAL RULES for JavaScript/TypeScript:
+- Use @playwright/test or playwright with a test runner. Use synchronous API where possible.
+- Base URL: "${targetUrl}"
+- Use the REAL selectors from the page analysis above
+- Do NOT assume credentials; do NOT interact with cookie banners or modals
+- Keep tests SIMPLE; prefer data-testid, aria-label, or CSS selectors`
+    };
+  }
+  // Default: Python
+  return {
+    fileList: `Generate these files (keep code concise):
+1. requirements.txt - just: playwright, pytest, pytest-playwright, pytest-json-report
+2. conftest.py - IMPORTANT: use @pytest.fixture(scope="session") for base_url fixture, return "${targetUrl}"
+3. pages/ - Create 2-3 page object files appropriate for this site
+4. tests/ - Create 2 test files with 2 tests each`,
+    rules: `CRITICAL RULES:
+- Use SYNCHRONOUS Playwright API only (from playwright.sync_api import Page)
+- Do NOT use async/await anywhere
+- Do NOT use @pytest.mark.asyncio
+- Test functions should be regular "def" not "async def"
+- conftest.py base_url fixture MUST have scope="session"
+- Do NOT create a base_page.py, keep it simple
+- Use the REAL selectors from the page analysis above
+- For is_loaded() methods, use DEFENSIVE checks:
+  - Check page.title() contains expected text, OR
+  - Check page.url contains expected path, OR
+  - Use page.locator().count() > 0 instead of is_visible() for optional elements
+- Tests should verify page loads without errors, not specific elements that may change
+- Do NOT assume credentials exist
+- Do NOT try to close modals or popups - they are unpredictable
+- Do NOT interact with cookie banners or promotional overlays
+- Keep tests SIMPLE - verify page loads, title is correct, key navigation works
+- When clicking elements, use page.locator("selector").first if multiple matches possible
+- Avoid "text=" selectors as they can match hidden screen-reader elements
+- Prefer data-testid, aria-label, or specific CSS selectors over text matching`
+  };
+}
+
 // Helper to extract and validate JSON from Claude's response
 function extractJSON(text) {
   const match = text.match(/\{[\s\S]*\}/);
@@ -47,6 +127,44 @@ app.post("/api/generate", async (req, res) => {
   try {
     const { language, framework, targetUrl } = req.body;
 
+    // Fetch the target page to analyze its structure
+    let pageAnalysis = "";
+    try {
+      const fetchResponse = await fetch(targetUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      });
+      const html = await fetchResponse.text();
+      
+      // Extract useful selectors from the HTML (limit size for Claude)
+      const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+      const title = titleMatch ? titleMatch[1].trim() : '';
+      
+      // Find common interactive elements
+      const inputs = [...html.matchAll(/<input[^>]*(id|name|placeholder|aria-label)="([^"]+)"[^>]*>/gi)].slice(0, 10);
+      const buttons = [...html.matchAll(/<button[^>]*>([^<]+)<\/button>/gi)].slice(0, 10);
+      const links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([^<]+)<\/a>/gi)].slice(0, 10);
+      const forms = [...html.matchAll(/<form[^>]*(id|name|action)="([^"]+)"[^>]*>/gi)].slice(0, 5);
+      
+      pageAnalysis = `
+ACTUAL PAGE ANALYSIS for ${targetUrl}:
+- Page title: "${title}"
+- Input fields found: ${inputs.map(m => m[2]).join(', ') || 'none detected'}
+- Buttons found: ${buttons.map(m => m[1].trim()).filter(b => b.length < 30).join(', ') || 'none detected'}
+- Key links: ${links.slice(0, 5).map(m => m[2].trim()).filter(l => l.length < 30).join(', ') || 'none detected'}
+- Forms: ${forms.map(m => m[2]).join(', ') || 'none detected'}
+
+USE THESE REAL SELECTORS in your page objects. If specific selectors aren't available, use defensive checks like page.title() or page.url.`;
+      
+      console.log("Page analysis:", pageAnalysis);
+    } catch (fetchError) {
+      console.log("Could not fetch target page:", fetchError.message);
+      pageAnalysis = `Could not fetch ${targetUrl} for analysis. Generate defensive tests that check page.title(), page.url, and use generic selectors.`;
+    }
+
+    const langPrompt = getLanguagePrompt(language, targetUrl);
+
     const message = await client.messages.create({
       model: "claude-sonnet-4-20250514",
       max_tokens: 8000,
@@ -65,27 +183,13 @@ Your entire response must be a single valid JSON object, nothing else.`,
       messages: [
         {
           role: "user",
-          content: `Generate a ${framework} test framework in ${language} for ${targetUrl} (Sauce Demo e-commerce site).
+          content: `Generate a ${framework} test framework in ${language} for testing: ${targetUrl}
 
-Site structure:
-- Login page: username/password fields, login button, error message
-- Inventory page: product list, add to cart buttons, cart icon
-- Cart page: cart items, checkout button
+${pageAnalysis}
 
-Generate these files (keep code concise):
-1. requirements.txt - just: playwright, pytest, pytest-playwright, pytest-json-report
-2. conftest.py - IMPORTANT: use @pytest.fixture(scope="session") for base_url fixture, return "${targetUrl}"
-3. pages/login_page.py - LoginPage class with login(), get_error_message() methods
-4. pages/inventory_page.py - InventoryPage class with add_to_cart(), get_cart_count() methods
-5. pages/cart_page.py - CartPage class with get_items(), checkout() methods
-6. tests/test_login.py - 2 tests: successful login, invalid login
-7. tests/test_cart.py - 2 tests: add item, verify cart
+${langPrompt.fileList}
 
-IMPORTANT RULES:
-- conftest.py base_url fixture MUST have scope="session"
-- Do NOT create a base_page.py, keep it simple
-- Test methods should be functions, not classes
-- Use page.goto(base_url) in tests
+${langPrompt.rules}
 
 JSON FORMAT:
 {"files":[{"name":"filename","path":"folder/","content":"code"}],"summary":"description"}

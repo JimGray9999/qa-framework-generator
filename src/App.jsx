@@ -22,7 +22,8 @@ const QAFrameworkGenerator = () => {
   const frameworks = {
     python: ['playwright', 'selenium', 'pytest-bdd'],
     java: ['testng', 'junit', 'cucumber'],
-    javascript: ['playwright', 'cypress', 'webdriverio']
+    javascript: ['playwright', 'cypress', 'webdriverio'],
+    'C#': ['playwright', 'selenium', 'cypress'],
   };
 
   const addLog = (message) => {
@@ -662,6 +663,7 @@ const QAFrameworkGenerator = () => {
               <option value="python">Python</option>
               <option value="java">Java</option>
               <option value="javascript">JavaScript</option>
+              <option value="C#">C#</option>
             </select>
           </div>
 
@@ -709,6 +711,43 @@ const QAFrameworkGenerator = () => {
             }}>
               Target URL
             </label>
+            
+            {/* Example Sites Dropdown */}
+            <select
+              value=""
+              onChange={(e) => {
+                if (e.target.value) {
+                  setConfig({ ...config, targetUrl: e.target.value });
+                }
+              }}
+              style={{
+                width: '100%',
+                padding: '10px 12px',
+                background: 'rgba(15, 15, 25, 0.8)',
+                border: '1px solid rgba(99, 102, 241, 0.3)',
+                borderRadius: '8px',
+                color: '#9ca3af',
+                fontSize: '0.85rem',
+                cursor: 'pointer',
+                marginBottom: '8px'
+              }}
+            >
+              <option value="">📋 Choose an example site...</option>
+              <optgroup label="Recommended Test Sites">
+                <option value="https://www.saucedemo.com">🛒 Sauce Demo (E-commerce)</option>
+                <option value="https://the-internet.herokuapp.com">🧪 The Internet (Selenium examples)</option>
+                <option value="https://automationexercise.com">🏋️ Automation Exercise</option>
+                <option value="https://demoqa.com">📚 DemoQA (ToolsQA)</option>
+                <option value="https://practice.expandtesting.com">🎯 Expand Testing Practice</option>
+              </optgroup>
+              <optgroup label="Real Sites (May Have Bot Protection)">
+                <option value="https://www.wikipedia.org">📖 Wikipedia</option>
+                <option value="https://news.ycombinator.com">🔶 Hacker News</option>
+                <option value="https://www.github.com">🐙 GitHub</option>
+              </optgroup>
+            </select>
+
+            {/* URL Input */}
             <input
               type="url"
               value={config.targetUrl}
@@ -725,6 +764,13 @@ const QAFrameworkGenerator = () => {
                 boxSizing: 'border-box'
               }}
             />
+            <div style={{
+              fontSize: '0.7rem',
+              color: '#6b7280',
+              marginTop: '4px'
+            }}>
+              Select an example or enter your own URL
+            </div>
           </div>
 
           {/* Browser Select */}
