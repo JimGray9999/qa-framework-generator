@@ -124,53 +124,49 @@ function getLanguagePrompt(language, targetUrl) {
 
 // Helper to extract and validate JSON from Claude's response
 function extractJSON(text) {
-  // Fast path: whole response is a JSON object
-  const trimmed = (text || "").trim();
-  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+  if (!text) {
+    throw new Error("Empty response from Claude");
+  }
+
+  let cleaned = text.trim();
+
+  // If the whole response already looks like JSON, try that first.
+  if (cleaned.startsWith("{") && cleaned.endsWith("}")) {
     try {
-      return JSON.parse(trimmed);
+      return JSON.parse(cleaned);
     } catch (e) {
       console.log("Top-level JSON parse failed:", e.message);
     }
   }
 
-  // Try to find JSON in code fences first
-  const codeBlockMatch = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-  if (codeBlockMatch) {
-    try {
-      return JSON.parse(codeBlockMatch[1]);
-    } catch (e) {
-      console.log("Code block parse failed:", e.message);
-    }
+  // Strip leading ```json / ``` and trailing ``` if present
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, "");
+  }
+  if (cleaned.endsWith("```")) {
+    cleaned = cleaned.replace(/```$/, "").trim();
   }
 
-  // Try to find first raw JSON object (non-greedy so we don't over-capture)
-  const jsonMatch = text.match(/\{[\s\S]*?\}/);
-  if (!jsonMatch) {
-    throw new Error("No JSON object found in response");
-  }
-
-  let jsonStr = jsonMatch[0];
+  // Now we expect cleaned to be (mostly) pure JSON
+  cleaned = cleaned.trim();
 
   // Try direct parse
   try {
-    return JSON.parse(jsonStr);
+    return JSON.parse(cleaned);
   } catch (e) {
     console.log("Direct parse failed, attempting cleanup...");
 
-    // Try to clean up common issues
-    // Remove trailing commas
-    jsonStr = jsonStr.replace(/,(\s*[}\]])/g, "$1");
+    // Remove trailing commas before } or ]
+    let fixed = cleaned.replace(/,(\s*[}\]])/g, "$1");
 
     try {
-      return JSON.parse(jsonStr);
+      return JSON.parse(fixed);
     } catch (e2) {
       console.log("Cleanup parse failed:", e2.message);
-      console.log("JSON string (first 500 chars):", jsonStr.substring(0, 500));
+      console.log("JSON string (first 500 chars):", fixed.substring(0, 500));
+      throw new Error("Failed to parse JSON from Claude response");
     }
   }
-
-  throw new Error("Failed to parse JSON from Claude response");
 }
 
 app.post("/api/generate", async (req, res) => {
