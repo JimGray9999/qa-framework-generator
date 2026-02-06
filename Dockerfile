@@ -1,12 +1,15 @@
-# Use Node as base, we'll add Python on top
+# Use Node as base, we'll add Python and .NET on top
 FROM node:20-bookworm-slim
 
-# Install Python and base dependencies
+# Install Python, .NET SDK, and base GUI/system dependencies
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     python3-venv \
     curl \
+    wget \
+    gnupg \
+    ca-certificates \
     # GUI dependencies for headed mode
     xvfb \
     libgtk-3-0 \
@@ -28,6 +31,12 @@ RUN apt-get update && apt-get install -y \
     libcairo2 \
     libcups2 \
     libdbus-1-3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && wget https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb -O packages-microsoft-prod.deb \
+    && dpkg -i packages-microsoft-prod.deb \
+    && rm packages-microsoft-prod.deb \
+    && apt-get update \
+    && apt-get install -y dotnet-sdk-8.0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a virtual environment to avoid pip conflicts
