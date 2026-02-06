@@ -9,10 +9,14 @@ import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import archiver from "archiver";
 
-dotenv.config();
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+// Load .env file - must happen before Anthropic client initialization
+dotenv.config({ path: join(__dirname, '.env') });
+
+// Debug: Check if API key is loaded
+console.log("API Key loaded:", process.env.ANTHROPIC_API_KEY ? "✓ Yes" : "✗ No");
 
 const app = express();
 app.use(cors());
@@ -23,7 +27,9 @@ if (process.env.NODE_ENV === 'production') {
   app.use(express.static(join(__dirname, 'dist')));
 }
 
-const client = new Anthropic();
+const client = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY
+});
 
 // Build language-specific file list and rules for the generation prompt
 function getLanguagePrompt(language, targetUrl) {
@@ -31,19 +37,30 @@ function getLanguagePrompt(language, targetUrl) {
   if (lang === 'c#' || lang === 'csharp') {
     return {
       fileList: `Generate these files (keep code concise):
-1. .csproj - SDK-style project with Playwright and NUnit (or xUnit) packages
+1. .csproj - SDK-style project with REQUIRED packages:
+   <PackageReference Include="Microsoft.Playwright" Version="1.48.0" />
+   <PackageReference Include="NUnit" Version="4.0.1" />
+   <PackageReference Include="NUnit3TestAdapter" Version="4.5.0" />
+   <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
 2. Page object .cs files in Pages/ - 2-3 page classes for this site
-3. Test .cs files in Tests/ - 2 test files with 2 tests each using NUnit [Test] (or xUnit [Fact])`,
+3. Test .cs files in Tests/ - 2 test files with 2 tests each using NUnit [Test]`,
       rules: `CRITICAL RULES for C#:
-- Use Microsoft.Playwright and NUnit (or xUnit). Use synchronous API: Page, IBrowserContext, etc.
-- Page object constructors take IPage and base URL; expose IsLoaded() that returns bool using defensive checks
-- Tests use [Test] and [SetUp] / [OneTimeSetUp] (NUnit) or [Fact] and IClassFixture (xUnit)
+- EVERY test file MUST start with: using NUnit.Framework; using Microsoft.Playwright;
+- EVERY page object MUST start with: using Microsoft.Playwright;
+- Use Microsoft.Playwright and NUnit. Use async/await for all Playwright calls
+- Page object constructors take IPage and base URL; expose async Task<bool> IsLoaded()
+- Tests use [Test], [SetUp], [OneTimeSetUp], [TearDown], [OneTimeTearDown] attributes
+- Test classes use [TestFixture] attribute
+- All test methods must be async Task, not void
 - Base URL for tests: "${targetUrl}"
 - Use the REAL selectors from the page analysis above
-- For IsLoaded(): check page.TitleAsync() or page.Url contains expected text, or locator.CountAsync() > 0
+- For IsLoaded(): check await page.TitleAsync() or page.Url contains expected text, or await locator.CountAsync() > 0
 - Do NOT assume credentials; do NOT interact with cookie banners or modals
 - Keep tests SIMPLE: verify page loads, title, key navigation
-- Use locator.First when multiple matches possible; prefer data-testid, aria-label, or CSS selectors`
+- Use await locator.First when multiple matches possible; prefer data-testid, aria-label, or CSS selectors
+- Browser selection: Environment.GetEnvironmentVariable("BROWSER") ?? "chromium"
+- Headed mode: Environment.GetEnvironmentVariable("HEADED") == "true"
+- In test setup: await playwright.Chromium/Firefox/Webkit.LaunchAsync(new() { Headless = !headed })`
     };
   }
   if (lang === 'java') {
@@ -107,19 +124,42 @@ function getLanguagePrompt(language, targetUrl) {
 
 // Helper to extract and validate JSON from Claude's response
 function extractJSON(text) {
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) {
+  // Try to find JSON in code fences first
+  const codeBlockMatch = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+  if (codeBlockMatch) {
+    try {
+      return JSON.parse(codeBlockMatch[1]);
+    } catch (e) {
+      console.log("Code block parse failed:", e.message);
+    }
+  }
+
+  // Try to find raw JSON object
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
     throw new Error("No JSON object found in response");
   }
-  
-  let jsonStr = match[0];
-  
+
+  let jsonStr = jsonMatch[0];
+
+  // Try direct parse
   try {
     return JSON.parse(jsonStr);
   } catch (e) {
     console.log("Direct parse failed, attempting cleanup...");
+
+    // Try to clean up common issues
+    // Remove trailing commas
+    jsonStr = jsonStr.replace(/,(\s*[}\]])/g, '$1');
+
+    try {
+      return JSON.parse(jsonStr);
+    } catch (e2) {
+      console.log("Cleanup parse failed:", e2.message);
+      console.log("JSON string (first 500 chars):", jsonStr.substring(0, 500));
+    }
   }
-  
+
   throw new Error("Failed to parse JSON from Claude response");
 }
 
@@ -269,10 +309,31 @@ app.post("/api/download-zip", async (req, res) => {
   }
 });
 
+// Detect language from files (C# takes precedence when present so we don't run pip for C#/Playwright)
+function detectLanguage(files) {
+  const hasCSharp = files.some((f) => {
+    const n = (f.name || '').toLowerCase();
+    const p = (f.path || '').toLowerCase();
+    const full = (p + n);
+    return n.endsWith('.csproj') || full.includes('.csproj') || n.endsWith('.cs') || full.endsWith('.cs');
+  });
+  if (hasCSharp) return 'csharp';
+
+  const hasPython = files.some((f) => {
+    const n = (f.name || '').toLowerCase();
+    const p = (f.path || '').toLowerCase();
+    const full = (p + n).toLowerCase();
+    return n.endsWith('.py') || full.endsWith('.py') || n === 'requirements.txt' || full.includes('requirements.txt');
+  });
+  if (hasPython) return 'python';
+
+  return 'python'; // Default fallback
+}
+
 // Run tests endpoint
 app.post("/api/run-tests", async (req, res) => {
   const { files, browser = 'chromium', headed = false } = req.body;
-  
+
   if (!files || !Array.isArray(files)) {
     return res.status(400).json({ error: "No files provided" });
   }
@@ -281,8 +342,13 @@ app.post("/api/run-tests", async (req, res) => {
   const validBrowsers = ['chromium', 'firefox', 'webkit'];
   const selectedBrowser = validBrowsers.includes(browser) ? browser : 'chromium';
 
+  // Detect language
+  const language = detectLanguage(files);
+  console.log("Detected language:", language);
+  console.log("Files received:", files.map(f => ({ name: f.name, path: f.path })));
+
   let tempDir;
-  
+
   try {
     // Create temp directory
     tempDir = await mkdtemp(join(tmpdir(), 'qa-framework-'));
@@ -293,13 +359,13 @@ app.post("/api/run-tests", async (req, res) => {
       // Handle paths that might be in the filename itself
       let fileName = file.name;
       let filePath = (file.path || '').replace(/^\/+|\/+$/g, ''); // Clean path
-      
+
       // If filename contains a path (e.g., "pages/base_page.py"), extract it
       if (fileName.includes('/')) {
         const parts = fileName.split('/');
         fileName = parts.pop();
         const fileNamePath = parts.join('/');
-        
+
         // Only use the filename's path if file.path is empty or matches
         if (!filePath || filePath === fileNamePath || fileNamePath.startsWith(filePath)) {
           filePath = fileNamePath;
@@ -308,15 +374,15 @@ app.post("/api/run-tests", async (req, res) => {
           filePath = join(filePath, fileNamePath);
         }
       }
-      
+
       const fullDir = filePath ? join(tempDir, filePath) : tempDir;
       const fullPath = join(fullDir, fileName);
-      
+
       // Create directory if needed
       if (filePath) {
         await mkdir(fullDir, { recursive: true });
       }
-      
+
       await writeFile(fullPath, file.content);
       console.log("Wrote:", fullPath);
     }
@@ -330,174 +396,14 @@ app.post("/api/run-tests", async (req, res) => {
       res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
     };
 
-    sendEvent('status', 'Creating virtual environment...');
-
-    // Create virtual environment
-    const venvPath = join(tempDir, 'venv');
-    const createVenv = spawn(PYTHON, ['-m', 'venv', venvPath], {
-      cwd: tempDir
-    });
-
-    await new Promise((resolve, reject) => {
-      createVenv.on('close', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`Failed to create venv with code ${code}`));
-      });
-      createVenv.on('error', reject);
-    });
-
-    // Use the venv's pip and python
-    const isWindows = process.platform === 'win32';
-    const venvPip = join(venvPath, isWindows ? 'Scripts' : 'bin', 'pip');
-    const venvPython = join(venvPath, isWindows ? 'Scripts' : 'bin', 'python');
-
-    sendEvent('status', 'Installing dependencies...');
-
-    // Log requirements.txt content for debugging
-    const reqFile = files.find(f => f.name === 'requirements.txt' || f.name.endsWith('requirements.txt'));
-    if (reqFile) {
-      console.log("Requirements content:", reqFile.content);
+    // Route to appropriate language handler
+    if (language === 'csharp') {
+      console.log("Routing to C# test execution");
+      await runCSharpTests(tempDir, files, selectedBrowser, headed, sendEvent);
+    } else {
+      console.log("Routing to Python test execution");
+      await runPythonTests(tempDir, files, selectedBrowser, headed, sendEvent);
     }
-
-    // Install dependencies using venv pip
-    const pipInstall = spawn(venvPip, ['install', '-r', 'requirements.txt'], {
-      cwd: tempDir
-    });
-
-    let pipOutput = '';
-    let pipError = '';
-    
-    pipInstall.stdout.on('data', (data) => {
-      pipOutput += data.toString();
-      sendEvent('pip', data.toString());
-    });
-
-    pipInstall.stderr.on('data', (data) => {
-      pipError += data.toString();
-      sendEvent('pip', data.toString());
-    });
-
-    await new Promise((resolve, reject) => {
-      pipInstall.on('close', (code) => {
-        if (code === 0) {
-          resolve();
-        } else {
-          console.error("pip install stderr:", pipError);
-          console.error("pip install stdout:", pipOutput);
-          reject(new Error(`pip install failed with code ${code}: ${pipError || pipOutput}`));
-        }
-      });
-      pipInstall.on('error', (err) => {
-        console.error("pip spawn error:", err);
-        reject(err);
-      });
-    });
-
-    sendEvent('status', `Installing Playwright ${selectedBrowser} browser...`);
-
-    // Install Playwright browsers
-    const playwrightInstall = spawn(venvPython, ['-m', 'playwright', 'install', selectedBrowser], {
-      cwd: tempDir
-    });
-
-    playwrightInstall.stdout.on('data', (data) => {
-      sendEvent('pip', data.toString());
-    });
-
-    playwrightInstall.stderr.on('data', (data) => {
-      sendEvent('pip', data.toString());
-    });
-
-    await new Promise((resolve, reject) => {
-      playwrightInstall.on('close', (code) => {
-        if (code === 0) {
-          resolve();
-        } else {
-          // Non-fatal, might already be installed
-          console.log("Playwright install exited with code:", code);
-          resolve();
-        }
-      });
-      playwrightInstall.on('error', () => resolve());
-    });
-
-    sendEvent('status', `Running tests on ${selectedBrowser}${headed ? ' (headed)' : ''}...`);
-
-    // Build pytest arguments
-    const reportPath = join(tempDir, 'report.json');
-    const pytestArgs = [
-      '-m', 'pytest', 
-      '-v', 
-      '--tb=short',
-      `--browser=${selectedBrowser}`,
-      '--json-report',
-      `--json-report-file=${reportPath}`,
-      '--json-report-indent=2'
-    ];
-    
-    // Add headed flag if enabled
-    if (headed) {
-      pytestArgs.push('--headed');
-    }
-
-    // Run pytest with JSON report
-    const pytest = spawn(venvPython, pytestArgs, {
-      cwd: tempDir,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' }
-    });
-
-    pytest.stdout.on('data', (data) => {
-      sendEvent('test', data.toString());
-    });
-
-    pytest.stderr.on('data', (data) => {
-      sendEvent('test', data.toString());
-    });
-
-    await new Promise((resolve) => {
-      pytest.on('close', async (code) => {
-        // Try to read and parse the JSON report
-        try {
-          const { readFile } = await import('fs/promises');
-          const reportContent = await readFile(reportPath, 'utf-8');
-          const report = JSON.parse(reportContent);
-          
-          // Send structured report data
-          sendEvent('report', {
-            summary: {
-              total: report.summary?.total || 0,
-              passed: report.summary?.passed || 0,
-              failed: report.summary?.failed || 0,
-              error: report.summary?.error || 0,
-              skipped: report.summary?.skipped || 0,
-              duration: report.duration || 0
-            },
-            tests: (report.tests || []).map(t => ({
-              nodeid: t.nodeid,
-              outcome: t.outcome,
-              duration: t.call?.duration || t.setup?.duration || 0,
-              setup: t.setup?.outcome,
-              call: t.call?.outcome,
-              teardown: t.teardown?.outcome,
-              error: t.call?.longrepr || t.setup?.longrepr || null,
-              stdout: t.call?.stdout || null,
-              stderr: t.call?.stderr || null
-            })),
-            environment: report.environment || {},
-            created: report.created
-          });
-        } catch (e) {
-          console.log('Could not read JSON report:', e.message);
-        }
-        
-        sendEvent('complete', { exitCode: code });
-        resolve();
-      });
-      pytest.on('error', (err) => {
-        sendEvent('error', err.message);
-        resolve();
-      });
-    });
 
     res.end();
 
@@ -511,6 +417,410 @@ app.post("/api/run-tests", async (req, res) => {
     }
   }
 });
+
+// Python test execution
+async function runPythonTests(tempDir, files, selectedBrowser, headed, sendEvent) {
+  sendEvent('status', 'Creating virtual environment...');
+
+  // Create virtual environment
+  const venvPath = join(tempDir, 'venv');
+  const createVenv = spawn(PYTHON, ['-m', 'venv', venvPath], {
+    cwd: tempDir
+  });
+
+  await new Promise((resolve, reject) => {
+    createVenv.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Failed to create venv with code ${code}`));
+    });
+    createVenv.on('error', reject);
+  });
+
+  // Use the venv's pip and python
+  const isWindows = process.platform === 'win32';
+  const venvPip = join(venvPath, isWindows ? 'Scripts' : 'bin', 'pip');
+  const venvPython = join(venvPath, isWindows ? 'Scripts' : 'bin', 'python');
+
+  sendEvent('status', 'Installing dependencies...');
+
+  // Log requirements.txt content for debugging
+  const reqFile = files.find(f => f.name === 'requirements.txt' || f.name.endsWith('requirements.txt'));
+  if (reqFile) {
+    console.log("Requirements content:", reqFile.content);
+  }
+
+  // Install dependencies using venv pip
+  const pipInstall = spawn(venvPip, ['install', '-r', 'requirements.txt'], {
+    cwd: tempDir
+  });
+
+  let pipOutput = '';
+  let pipError = '';
+
+  pipInstall.stdout.on('data', (data) => {
+    pipOutput += data.toString();
+    sendEvent('pip', data.toString());
+  });
+
+  pipInstall.stderr.on('data', (data) => {
+    pipError += data.toString();
+    sendEvent('pip', data.toString());
+  });
+
+  await new Promise((resolve, reject) => {
+    pipInstall.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        console.error("pip install stderr:", pipError);
+        console.error("pip install stdout:", pipOutput);
+        reject(new Error(`pip install failed with code ${code}: ${pipError || pipOutput}`));
+      }
+    });
+    pipInstall.on('error', (err) => {
+      console.error("pip spawn error:", err);
+      reject(err);
+    });
+  });
+
+  sendEvent('status', `Installing Playwright ${selectedBrowser} browser...`);
+
+  // Install Playwright browsers
+  const playwrightInstall = spawn(venvPython, ['-m', 'playwright', 'install', selectedBrowser], {
+    cwd: tempDir
+  });
+
+  playwrightInstall.stdout.on('data', (data) => {
+    sendEvent('pip', data.toString());
+  });
+
+  playwrightInstall.stderr.on('data', (data) => {
+    sendEvent('pip', data.toString());
+  });
+
+  await new Promise((resolve, reject) => {
+    playwrightInstall.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        // Non-fatal, might already be installed
+        console.log("Playwright install exited with code:", code);
+        resolve();
+      }
+    });
+    playwrightInstall.on('error', () => resolve());
+  });
+
+  sendEvent('status', `Running tests on ${selectedBrowser}${headed ? ' (headed)' : ''}...`);
+
+  // Build pytest arguments
+  const reportPath = join(tempDir, 'report.json');
+  const pytestArgs = [
+    '-m', 'pytest',
+    '-v',
+    '--tb=short',
+    `--browser=${selectedBrowser}`,
+    '--json-report',
+    `--json-report-file=${reportPath}`,
+    '--json-report-indent=2'
+  ];
+
+  // Add headed flag if enabled
+  if (headed) {
+    pytestArgs.push('--headed');
+  }
+
+  // Run pytest with JSON report
+  const pytest = spawn(venvPython, pytestArgs, {
+    cwd: tempDir,
+    env: { ...process.env, PYTHONUNBUFFERED: '1' }
+  });
+
+  pytest.stdout.on('data', (data) => {
+    sendEvent('test', data.toString());
+  });
+
+  pytest.stderr.on('data', (data) => {
+    sendEvent('test', data.toString());
+  });
+
+  await new Promise((resolve) => {
+    pytest.on('close', async (code) => {
+      // Try to read and parse the JSON report
+      try {
+        const { readFile } = await import('fs/promises');
+        const reportContent = await readFile(reportPath, 'utf-8');
+        const report = JSON.parse(reportContent);
+
+        // Send structured report data
+        sendEvent('report', {
+          summary: {
+            total: report.summary?.total || 0,
+            passed: report.summary?.passed || 0,
+            failed: report.summary?.failed || 0,
+            error: report.summary?.error || 0,
+            skipped: report.summary?.skipped || 0,
+            duration: report.duration || 0
+          },
+          tests: (report.tests || []).map(t => ({
+            nodeid: t.nodeid,
+            outcome: t.outcome,
+            duration: t.call?.duration || t.setup?.duration || 0,
+            setup: t.setup?.outcome,
+            call: t.call?.outcome,
+            teardown: t.teardown?.outcome,
+            error: t.call?.longrepr || t.setup?.longrepr || null,
+            stdout: t.call?.stdout || null,
+            stderr: t.call?.stderr || null
+          })),
+          environment: report.environment || {},
+          created: report.created
+        });
+      } catch (e) {
+        console.log('Could not read JSON report:', e.message);
+      }
+
+      sendEvent('complete', { exitCode: code });
+      resolve();
+    });
+    pytest.on('error', (err) => {
+      sendEvent('error', err.message);
+      resolve();
+    });
+  });
+}
+
+// C# test execution
+async function runCSharpTests(tempDir, files, selectedBrowser, headed, sendEvent) {
+  // Find the .csproj file
+  const csprojFile = files.find(f => f.name.endsWith('.csproj'));
+  if (!csprojFile) {
+    throw new Error('No .csproj file found in C# project');
+  }
+
+  const csprojPath = join(tempDir, csprojFile.name);
+  console.log("C# project file:", csprojPath);
+
+  sendEvent('status', 'Restoring NuGet packages...');
+
+  // Run dotnet restore
+  const restore = spawn('dotnet', ['restore', csprojFile.name], {
+    cwd: tempDir
+  });
+
+  restore.stdout.on('data', (data) => {
+    sendEvent('pip', data.toString());
+  });
+
+  restore.stderr.on('data', (data) => {
+    sendEvent('pip', data.toString());
+  });
+
+  await new Promise((resolve, reject) => {
+    restore.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`dotnet restore failed with code ${code}`));
+      }
+    });
+    restore.on('error', reject);
+  });
+
+  sendEvent('status', 'Building project...');
+
+  // Run dotnet build
+  const build = spawn('dotnet', ['build', csprojFile.name, '-c', 'Release'], {
+    cwd: tempDir
+  });
+
+  build.stdout.on('data', (data) => {
+    sendEvent('pip', data.toString());
+  });
+
+  build.stderr.on('data', (data) => {
+    sendEvent('pip', data.toString());
+  });
+
+  await new Promise((resolve, reject) => {
+    build.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`dotnet build failed with code ${code}`));
+      }
+    });
+    build.on('error', reject);
+  });
+
+  sendEvent('status', `Installing Playwright ${selectedBrowser} browser...`);
+
+  // For .NET Playwright, we need to use the build output's playwright executable
+  // The Microsoft.Playwright NuGet package includes a playwright executable in the build output
+  // We need to run: dotnet exec bin/Release/net8.0/playwright.dll install chromium --with-deps
+  const playwrightDll = join(tempDir, 'bin', 'Release', 'net8.0', 'playwright.dll');
+
+  const playwrightInstall = spawn('dotnet', ['exec', playwrightDll, 'install', selectedBrowser, '--with-deps'], {
+    cwd: tempDir,
+    env: { ...process.env }
+  });
+
+  playwrightInstall.stdout.on('data', (data) => {
+    sendEvent('pip', data.toString());
+  });
+
+  playwrightInstall.stderr.on('data', (data) => {
+    sendEvent('pip', data.toString());
+  });
+
+  await new Promise((resolve) => {
+    playwrightInstall.on('close', (code) => {
+      console.log("Playwright install completed with code:", code);
+      if (code === 0) {
+        resolve();
+      } else {
+        // Non-fatal, might already be installed
+        console.log("Playwright install exited with non-zero code:", code);
+        resolve();
+      }
+    });
+    playwrightInstall.on('error', (err) => {
+      console.log("Playwright install error:", err.message);
+      resolve();
+    });
+  });
+
+  sendEvent('status', `Running tests on ${selectedBrowser}${headed ? ' (headed)' : ''}...`);
+
+  // Set environment variables for browser and headed mode
+  const testEnv = {
+    ...process.env,
+    BROWSER: selectedBrowser,
+    HEADED: headed ? 'true' : 'false'
+  };
+
+  // Run dotnet test with TRX logger
+  const reportDir = join(tempDir, 'TestResults');
+  const testProcess = spawn('dotnet', [
+    'test',
+    csprojFile.name,
+    '-c', 'Release',
+    '--no-build',
+    '--logger', 'trx',
+    '--results-directory', reportDir
+  ], {
+    cwd: tempDir,
+    env: testEnv
+  });
+
+  testProcess.stdout.on('data', (data) => {
+    sendEvent('test', data.toString());
+  });
+
+  testProcess.stderr.on('data', (data) => {
+    sendEvent('test', data.toString());
+  });
+
+  await new Promise((resolve) => {
+    testProcess.on('close', async (code) => {
+      // Try to parse TRX file
+      try {
+        const { readdir, readFile } = await import('fs/promises');
+        const files = await readdir(reportDir);
+        const trxFile = files.find(f => f.endsWith('.trx'));
+
+        if (trxFile) {
+          const trxPath = join(reportDir, trxFile);
+          const trxContent = await readFile(trxPath, 'utf-8');
+          const report = parseTrxReport(trxContent);
+          sendEvent('report', report);
+        }
+      } catch (e) {
+        console.log('Could not read TRX report:', e.message);
+      }
+
+      sendEvent('complete', { exitCode: code });
+      resolve();
+    });
+    testProcess.on('error', (err) => {
+      sendEvent('error', err.message);
+      resolve();
+    });
+  });
+}
+
+// Parse TRX XML report to normalized JSON format
+function parseTrxReport(trxContent) {
+  // Basic XML parsing for TRX format
+  const testResults = [];
+  let total = 0, passed = 0, failed = 0, skipped = 0;
+  let totalDuration = 0;
+
+  // Extract summary from Counters element
+  const countersMatch = trxContent.match(/<Counters\s+total="(\d+)"\s+executed="(\d+)"\s+passed="(\d+)"\s+failed="(\d+)"\s+error="(\d+)"\s+timeout="(\d+)"\s+aborted="(\d+)"\s+inconclusive="(\d+)"\s+passedButRunAborted="(\d+)"\s+notRunnable="(\d+)"\s+notExecuted="(\d+)"\s+disconnected="(\d+)"\s+warning="(\d+)"\s+completed="(\d+)"\s+inProgress="(\d+)"\s+pending="(\d+)"/);
+
+  if (countersMatch) {
+    total = parseInt(countersMatch[1]);
+    passed = parseInt(countersMatch[3]);
+    failed = parseInt(countersMatch[4]);
+    skipped = total - parseInt(countersMatch[2]); // not executed
+  }
+
+  // Extract individual test results
+  const unitTestResultRegex = /<UnitTestResult\s+[^>]*testName="([^"]+)"[^>]*outcome="([^"]+)"[^>]*duration="([^"]+)"[^>]*>/g;
+  let match;
+
+  while ((match = unitTestResultRegex.exec(trxContent)) !== null) {
+    const testName = match[1];
+    const outcome = match[2];
+    const duration = parseDuration(match[3]);
+
+    totalDuration += duration;
+
+    // Extract error message if present
+    let errorMessage = null;
+    const testId = testName;
+    const messageMatch = trxContent.match(new RegExp(`testName="${testName}"[^>]*>[\\s\\S]*?<Message>([\\s\\S]*?)</Message>`));
+    if (messageMatch) {
+      errorMessage = messageMatch[1].trim();
+    }
+
+    testResults.push({
+      nodeid: testName,
+      outcome: outcome.toLowerCase(),
+      duration: duration,
+      error: errorMessage,
+      stdout: null,
+      stderr: null
+    });
+  }
+
+  return {
+    summary: {
+      total,
+      passed,
+      failed,
+      error: 0,
+      skipped,
+      duration: totalDuration
+    },
+    tests: testResults,
+    environment: {},
+    created: new Date().toISOString()
+  };
+}
+
+// Parse duration string from TRX format (HH:MM:SS.mmmmmmm)
+function parseDuration(durationStr) {
+  const parts = durationStr.split(':');
+  if (parts.length === 3) {
+    const hours = parseFloat(parts[0]);
+    const minutes = parseFloat(parts[1]);
+    const seconds = parseFloat(parts[2]);
+    return hours * 3600 + minutes * 60 + seconds;
+  }
+  return 0;
+}
 
 // Health check endpoint
 app.get("/api/health", (req, res) => {
