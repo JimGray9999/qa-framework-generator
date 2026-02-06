@@ -124,6 +124,16 @@ function getLanguagePrompt(language, targetUrl) {
 
 // Helper to extract and validate JSON from Claude's response
 function extractJSON(text) {
+  // Fast path: whole response is a JSON object
+  const trimmed = (text || "").trim();
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      return JSON.parse(trimmed);
+    } catch (e) {
+      console.log("Top-level JSON parse failed:", e.message);
+    }
+  }
+
   // Try to find JSON in code fences first
   const codeBlockMatch = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
   if (codeBlockMatch) {
@@ -134,8 +144,8 @@ function extractJSON(text) {
     }
   }
 
-  // Try to find raw JSON object
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  // Try to find first raw JSON object (non-greedy so we don't over-capture)
+  const jsonMatch = text.match(/\{[\s\S]*?\}/);
   if (!jsonMatch) {
     throw new Error("No JSON object found in response");
   }
@@ -150,7 +160,7 @@ function extractJSON(text) {
 
     // Try to clean up common issues
     // Remove trailing commas
-    jsonStr = jsonStr.replace(/,(\s*[}\]])/g, '$1');
+    jsonStr = jsonStr.replace(/,(\s*[}\]])/g, "$1");
 
     try {
       return JSON.parse(jsonStr);
