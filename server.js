@@ -451,47 +451,49 @@ async function runPythonTests(tempDir, files, selectedBrowser, headed, sendEvent
   const venvPip = join(venvPath, isWindows ? 'Scripts' : 'bin', 'pip');
   const venvPython = join(venvPath, isWindows ? 'Scripts' : 'bin', 'python');
 
-  sendEvent('status', 'Installing dependencies...');
-
   // Log requirements.txt content for debugging
   const reqFile = files.find(f => f.name === 'requirements.txt' || f.name.endsWith('requirements.txt'));
   if (reqFile) {
+    sendEvent('status', 'Installing dependencies from requirements.txt...');
     console.log("Requirements content:", reqFile.content);
+
+    // Install dependencies using venv pip
+    const pipInstall = spawn(venvPip, ['install', '-r', 'requirements.txt'], {
+      cwd: tempDir
+    });
+
+    let pipOutput = '';
+    let pipError = '';
+
+    pipInstall.stdout.on('data', (data) => {
+      pipOutput += data.toString();
+      sendEvent('pip', data.toString());
+    });
+
+    pipInstall.stderr.on('data', (data) => {
+      pipError += data.toString();
+      sendEvent('pip', data.toString());
+    });
+
+    await new Promise((resolve, reject) => {
+      pipInstall.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          console.error("pip install stderr:", pipError);
+          console.error("pip install stdout:", pipOutput);
+          reject(new Error(`pip install failed with code ${code}: ${pipError || pipOutput}`));
+        }
+      });
+      pipInstall.on('error', (err) => {
+        console.error("pip spawn error:", err);
+        reject(err);
+      });
+    });
+  } else {
+    // No requirements file – dependencies are already baked into the container image
+    sendEvent('status', 'No requirements.txt found, skipping dependency installation.');
   }
-
-  // Install dependencies using venv pip
-  const pipInstall = spawn(venvPip, ['install', '-r', 'requirements.txt'], {
-    cwd: tempDir
-  });
-
-  let pipOutput = '';
-  let pipError = '';
-
-  pipInstall.stdout.on('data', (data) => {
-    pipOutput += data.toString();
-    sendEvent('pip', data.toString());
-  });
-
-  pipInstall.stderr.on('data', (data) => {
-    pipError += data.toString();
-    sendEvent('pip', data.toString());
-  });
-
-  await new Promise((resolve, reject) => {
-    pipInstall.on('close', (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        console.error("pip install stderr:", pipError);
-        console.error("pip install stdout:", pipOutput);
-        reject(new Error(`pip install failed with code ${code}: ${pipError || pipOutput}`));
-      }
-    });
-    pipInstall.on('error', (err) => {
-      console.error("pip spawn error:", err);
-      reject(err);
-    });
-  });
 
   sendEvent('status', `Installing Playwright ${selectedBrowser} browser...`);
 
