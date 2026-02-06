@@ -2,7 +2,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import express from "express";
 import cors from "cors";
 import { spawn } from "child_process";
-import { mkdtemp, writeFile, mkdir, readFile } from "fs/promises";
+import { mkdtemp, writeFile, mkdir, readFile, access } from "fs/promises";
+import { constants } from "fs";
 import { join, dirname } from "path";
 import { tmpdir } from "os";
 import { fileURLToPath } from "url";
@@ -447,14 +448,31 @@ async function runPythonTests(tempDir, files, selectedBrowser, headed, sendEvent
   const venvPip = join(venvPath, isWindows ? 'Scripts' : 'bin', 'pip');
   const venvPython = join(venvPath, isWindows ? 'Scripts' : 'bin', 'python');
 
-  // Log requirements.txt content for debugging
+  // Check if requirements.txt exists in files array AND on disk
   const reqFile = files.find(f => f.name === 'requirements.txt' || f.name.endsWith('requirements.txt'));
-  if (reqFile) {
+  const reqFilePath = reqFile ? join(tempDir, reqFile.path || '', reqFile.name) : null;
+  
+  // Verify file exists on disk before trying to use it
+  let reqFileExists = false;
+  if (reqFilePath) {
+    try {
+      await access(reqFilePath, constants.F_OK);
+      reqFileExists = true;
+    } catch (e) {
+      console.log("requirements.txt found in files array but not on disk:", reqFilePath);
+      reqFileExists = false;
+    }
+  }
+
+  if (reqFile && reqFileExists) {
     sendEvent('status', 'Installing dependencies from requirements.txt...');
     console.log("Requirements content:", reqFile.content);
 
+    // Use the actual path to the file (might be in a subdirectory)
+    const reqFileRelativePath = reqFile.path ? join(reqFile.path, reqFile.name) : reqFile.name;
+    
     // Install dependencies using venv pip
-    const pipInstall = spawn(venvPip, ['install', '-r', 'requirements.txt'], {
+    const pipInstall = spawn(venvPip, ['install', '-r', reqFileRelativePath], {
       cwd: tempDir
     });
 
@@ -486,6 +504,10 @@ async function runPythonTests(tempDir, files, selectedBrowser, headed, sendEvent
         reject(err);
       });
     });
+  } else if (reqFile && !reqFileExists) {
+    // File was supposed to be written but wasn't - skip installation
+    sendEvent('status', 'requirements.txt not found on disk, skipping dependency installation.');
+    console.log("Warning: requirements.txt was in files array but not written to disk");
   } else {
     // No requirements file – dependencies are already baked into the container image
     sendEvent('status', 'No requirements.txt found, skipping dependency installation.');
