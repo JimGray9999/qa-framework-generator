@@ -217,6 +217,16 @@ ${pageAnalysis}
 
 ${langPrompt.fileList}
 
+ALSO REQUIRED:
+- README.md at the project root (path: "") covering, specifically for ${language} + ${framework}:
+  1. Title and a one-line description
+  2. Prerequisites (e.g. Python 3.10+, Node 18+, .NET 8 SDK, JDK 17 + Maven — pick what applies)
+  3. Install steps — exact shell commands (e.g. "python -m venv venv && source venv/bin/activate && pip install -r requirements.txt && playwright install chromium" for Python+Playwright; "npm install && npx playwright install" for JS+Playwright; "dotnet restore && dotnet build" plus the playwright.dll install command for C#; "mvn install" plus mvn exec for Java)
+  4. How to run the tests — the actual command (pytest / npx playwright test / dotnet test / mvn test)
+  5. How to switch browser (chromium/firefox/webkit) and toggle headed mode, matching how the generated tests read those options
+  6. Project structure — short tree of the generated folders/files
+  Keep it concise (under ~60 lines), use proper markdown headings and fenced code blocks. Commands MUST match what the generated code actually expects.
+
 ${langPrompt.rules}
 
 JSON FORMAT:
