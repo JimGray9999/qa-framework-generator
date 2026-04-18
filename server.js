@@ -1,4 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
 import express from "express";
 import cors from "cors";
 import { spawn } from "child_process";
@@ -8,6 +7,7 @@ import { tmpdir } from "os";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import archiver from "archiver";
+import { generateWithProvider, detectProviders } from "./providers.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -15,8 +15,9 @@ const __dirname = dirname(__filename);
 // Load .env file - must happen before Anthropic client initialization
 dotenv.config({ path: join(__dirname, '.env') });
 
-// Debug: Check if API key is loaded
-console.log("API Key loaded:", process.env.ANTHROPIC_API_KEY ? "✓ Yes" : "✗ No");
+// Debug: Check if API keys are loaded
+console.log("Anthropic API key:", process.env.ANTHROPIC_API_KEY ? "✓ loaded from env" : "not set (optional)");
+console.log("OpenAI API key:", process.env.OPENAI_API_KEY ? "✓ loaded from env" : "not set (optional)");
 
 const app = express();
 app.use(cors());
@@ -26,10 +27,6 @@ app.use(express.json({ limit: '10mb' }));
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(join(__dirname, 'dist')));
 }
-
-const client = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY
-});
 
 // Build language-specific file list and rules for the generation prompt
 function getLanguagePrompt(language, targetUrl) {
@@ -163,9 +160,18 @@ function extractJSON(text) {
   throw new Error("Failed to parse JSON from Claude response");
 }
 
+app.get("/api/providers", async (req, res) => {
+  try {
+    const providers = await detectProviders();
+    res.json({ providers });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post("/api/generate", async (req, res) => {
   try {
-    const { language, framework, targetUrl } = req.body;
+    const { language, framework, targetUrl, provider, apiKey } = req.body;
 
     // Fetch the target page to analyze its structure
     let pageAnalysis = "";
@@ -205,25 +211,7 @@ USE THESE REAL SELECTORS in your page objects. If specific selectors aren't avai
 
     const langPrompt = getLanguagePrompt(language, targetUrl);
 
-    const message = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 8000,
-      system: `You are a code generation assistant that outputs ONLY valid JSON.
-
-CRITICAL RULES FOR VALID JSON:
-1. All strings must use double quotes
-2. Inside string values, escape double quotes as \\"
-3. Inside string values, escape newlines as \\n
-4. Inside string values, escape backslashes as \\\\
-5. No trailing commas
-6. No comments
-7. Keep code CONCISE - no lengthy docstrings, minimal comments
-
-Your entire response must be a single valid JSON object, nothing else.`,
-      messages: [
-        {
-          role: "user",
-          content: `Generate a ${framework} test framework in ${language} for testing: ${targetUrl}
+    const userPrompt = `Generate a ${framework} test framework in ${language} for testing: ${targetUrl}
 
 ${pageAnalysis}
 
@@ -234,12 +222,10 @@ ${langPrompt.rules}
 JSON FORMAT:
 {"files":[{"name":"filename","path":"folder/","content":"code"}],"summary":"description"}
 
-Use \\n for newlines, \\" for quotes. Output ONLY valid JSON.`
-        }
-      ]
-    });
+Use \\n for newlines, \\" for quotes. Output ONLY valid JSON.`;
 
-    const text = message.content[0].text;
+    console.log(`Generating via provider: ${provider || "anthropic-api"}`);
+    const text = await generateWithProvider({ provider, apiKey, userPrompt });
     console.log("Raw response:", text.substring(0, 200));
     
     const parsed = extractJSON(text);
