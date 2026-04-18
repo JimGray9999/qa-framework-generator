@@ -46,6 +46,7 @@ const QAFrameworkGenerator = () => {
     python: ['playwright', 'selenium', 'pytest-bdd'],
     java: ['testng', 'junit', 'cucumber'],
     javascript: ['playwright', 'cypress', 'webdriverio'],
+    typescript: ['playwright', 'cypress', 'webdriverio'],
     'C#': ['playwright', 'selenium', 'cypress'],
   };
 

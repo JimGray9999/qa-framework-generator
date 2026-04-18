@@ -93,6 +93,39 @@ function getLanguagePrompt(language, targetUrl) {
 - Keep tests SIMPLE; prefer data-testid, aria-label, or CSS selectors`
     };
   }
+  if (lang === 'typescript') {
+    return {
+      fileList: `Generate these files (keep code concise):
+1. package.json with "type":"module", devDependencies "@playwright/test": "^1.48.0", "dotenv": "^16.4.5", "typescript": "^5.4.0", "@types/node": "^20.12.0". Scripts MUST include exactly these (plain env var prefix, no cross-env):
+     "test": "playwright test",
+     "test:chromium": "BROWSER=chromium playwright test",
+     "test:firefox": "BROWSER=firefox playwright test",
+     "test:webkit": "BROWSER=webkit playwright test",
+     "test:headed": "HEADED=true playwright test",
+     "test:firefox:headed": "BROWSER=firefox HEADED=true playwright test",
+     "test:webkit:headed": "BROWSER=webkit HEADED=true playwright test",
+     "typecheck": "tsc --noEmit"
+2. .env file at project root with exactly:
+     BROWSER=chromium
+     HEADED=false
+3. tsconfig.json with: { "compilerOptions": { "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler", "strict": true, "esModuleInterop": true, "skipLibCheck": true, "resolveJsonModule": true, "types": ["node"] }, "include": ["**/*.ts"] }
+4. playwright.config.ts - import 'dotenv/config' as a side-effect at top, then import { defineConfig } from '@playwright/test'. Export default defineConfig({ testDir: './tests', testMatch: '**/*.ts', use: { baseURL: process.env.BASE_URL || '${targetUrl}', headless: process.env.HEADED !== 'true', browserName: (process.env.BROWSER as 'chromium' | 'firefox' | 'webkit') || 'chromium' }, projects: [{ name: process.env.BROWSER || 'chromium' }] }). Do NOT use devices.
+5. Page object .ts files in pages/ - 2-3 page classes. Import Page type: import { Page } from '@playwright/test'. Each class exported: export class LoginPage { constructor(private page: Page) {} ... }. Methods are async with explicit return types where non-trivial (e.g. async isLoaded(): Promise<boolean>).
+6. Test .ts files in tests/ - 2 test files with 2 tests each. Import: import { test, expect } from '@playwright/test'. Tests are async: test('name', async ({ page }) => { ... }).
+7. README.md MUST document: editing .env to change defaults, running "npm run test:firefox" / "npm run test:headed" / etc., and "npm run typecheck" for type checking.`,
+      rules: `CRITICAL RULES for TypeScript:
+- Use @playwright/test ONLY. Tests use: import { test, expect } from '@playwright/test'
+- Use ES modules + TypeScript. All imports use import/export with explicit relative paths (e.g. from '../pages/login_page' — Playwright's TS loader strips the extension; do NOT write .ts or .js on relative imports).
+- Page object constructors take ONE argument typed as Page. Do NOT pass baseURL — Playwright's config handles it, tests use relative paths like page.goto('/').
+- All test functions are async. await every Playwright call.
+- Strict mode is ON — no implicit any, no unused locals.
+- Prefer auto-retrying matchers: expect(page).toHaveTitle(...), expect(page).toHaveURL(...), expect(locator).toBeVisible(). Do NOT use waitForSelector or waitForTimeout.
+- Use the REAL selectors from the page analysis above
+- Do NOT assume credentials; do NOT interact with cookie banners or modals
+- Keep tests SIMPLE; prefer data-testid, aria-label, or CSS selectors over text matching
+- testMatch MUST be '**/*.ts' in playwright.config.ts so test_*.ts files are discovered.`
+    };
+  }
   if (lang === 'javascript') {
     return {
       fileList: `Generate these files (keep code concise):
@@ -370,9 +403,15 @@ function detectLanguage(files) {
   });
   if (hasCSharp) return 'csharp';
 
+  const hasTypeScript = files.some((f) => {
+    const n = (f.name || '').toLowerCase();
+    return n === 'tsconfig.json' || n === 'playwright.config.ts' || n.endsWith('.ts');
+  });
+  if (hasTypeScript) return 'typescript';
+
   const hasJavaScript = files.some((f) => {
     const n = (f.name || '').toLowerCase();
-    return n === 'package.json' || n === 'playwright.config.js' || n === 'playwright.config.mjs' || n === 'playwright.config.ts';
+    return n === 'package.json' || n === 'playwright.config.js' || n === 'playwright.config.mjs';
   });
   if (hasJavaScript) return 'javascript';
 
@@ -457,8 +496,8 @@ app.post("/api/run-tests", async (req, res) => {
     if (language === 'csharp') {
       console.log("Routing to C# test execution");
       await runCSharpTests(tempDir, files, selectedBrowser, headed, sendEvent);
-    } else if (language === 'javascript') {
-      console.log("Routing to JavaScript test execution");
+    } else if (language === 'javascript' || language === 'typescript') {
+      console.log(`Routing to ${language} test execution`);
       await runJavaScriptTests(tempDir, files, selectedBrowser, headed, sendEvent);
     } else {
       console.log("Routing to Python test execution");
