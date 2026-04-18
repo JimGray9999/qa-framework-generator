@@ -44,7 +44,7 @@ const QAFrameworkGenerator = () => {
 
   const frameworks = {
     python: ['playwright', 'selenium', 'pytest-bdd'],
-    java: ['testng', 'junit', 'cucumber'],
+    java: ['playwright', 'testng', 'junit', 'cucumber'],
     javascript: ['playwright', 'cypress', 'webdriverio'],
     typescript: ['playwright', 'cypress', 'webdriverio'],
     'C#': ['playwright', 'selenium', 'cypress'],
