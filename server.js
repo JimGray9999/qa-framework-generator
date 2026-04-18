@@ -78,10 +78,21 @@ function getLanguagePrompt(language, targetUrl) {
   if (lang === 'javascript') {
     return {
       fileList: `Generate these files (keep code concise):
-1. package.json with "type":"module" and devDependency "@playwright/test": "^1.48.0"; scripts: {"test":"playwright test"}
-2. playwright.config.js - exports default from defineConfig({ testDir: './tests', testMatch: '**/*.js', use: { baseURL: process.env.BASE_URL || '${targetUrl}', headless: process.env.HEADED !== 'true', browserName: process.env.BROWSER || 'chromium' }, projects: [{ name: process.env.BROWSER || 'chromium' }] }) — import defineConfig from '@playwright/test'. Do NOT use devices. testMatch MUST be '**/*.js' so test_*.js files are discovered.
-3. Page object .js files in pages/ - 2-3 page classes. Each class exported with ES module syntax (export class LoginPage {}). Constructor takes (page) only — baseURL comes from config. Methods are async.
-4. Test .js files in tests/ - 2 test files with 2 tests each using @playwright/test (import { test, expect } from '@playwright/test')`,
+1. package.json with "type":"module", devDependencies "@playwright/test": "^1.48.0" and "dotenv": "^16.4.5". Scripts MUST include exactly these, in this form (plain env var prefix, no cross-env):
+     "test": "playwright test",
+     "test:chromium": "BROWSER=chromium playwright test",
+     "test:firefox": "BROWSER=firefox playwright test",
+     "test:webkit": "BROWSER=webkit playwright test",
+     "test:headed": "HEADED=true playwright test",
+     "test:firefox:headed": "BROWSER=firefox HEADED=true playwright test",
+     "test:webkit:headed": "BROWSER=webkit HEADED=true playwright test"
+2. .env file at project root with exactly these two lines:
+     BROWSER=chromium
+     HEADED=false
+3. playwright.config.js - MUST import 'dotenv/config' at the very top as a side-effect import, then import defineConfig from '@playwright/test', and export default defineConfig({ testDir: './tests', testMatch: '**/*.js', use: { baseURL: process.env.BASE_URL || '${targetUrl}', headless: process.env.HEADED !== 'true', browserName: process.env.BROWSER || 'chromium' }, projects: [{ name: process.env.BROWSER || 'chromium' }] }). Do NOT use devices. testMatch MUST be '**/*.js' so test_*.js files are discovered.
+4. Page object .js files in pages/ - 2-3 page classes. Each class exported with ES module syntax (export class LoginPage {}). Constructor takes (page) only — baseURL comes from config. Methods are async.
+5. Test .js files in tests/ - 2 test files with 2 tests each using @playwright/test (import { test, expect } from '@playwright/test').
+6. README.md MUST document: editing .env to change defaults, and running "npm run test:firefox", "npm run test:headed", etc. for one-off overrides.`,
       rules: `CRITICAL RULES for JavaScript:
 - Use @playwright/test ONLY (not raw playwright, not Jest/Mocha). Tests use: import { test, expect } from '@playwright/test'
 - Use ES modules (package.json has "type":"module"). All imports use import/export, not require.
