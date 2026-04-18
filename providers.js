@@ -75,8 +75,14 @@ async function callClaudeLocal({ userPrompt }) {
   return await new Promise((resolve, reject) => {
     const fullPrompt = `${SYSTEM_PROMPT}\n\n${userPrompt}`;
     console.log(`[claude-local] using binary: ${claudeBin}`);
+    // Strip ANTHROPIC_API_KEY from env so claude uses the subscription login
+    // instead of falling back to API-key billing (which may be out of credits).
+    const childEnv = { ...process.env };
+    delete childEnv.ANTHROPIC_API_KEY;
+    delete childEnv.ANTHROPIC_AUTH_TOKEN;
     const proc = spawn(claudeBin, ["-p", "--output-format", "text"], {
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      env: childEnv
     });
     let stdout = "";
     let stderr = "";
