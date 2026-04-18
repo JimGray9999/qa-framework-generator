@@ -78,15 +78,22 @@ function getLanguagePrompt(language, targetUrl) {
   if (lang === 'javascript') {
     return {
       fileList: `Generate these files (keep code concise):
-1. package.json - with @playwright/test (or playwright and mocha/jest)
-2. Page object .js or .ts files in pages/ - 2-3 page classes
-3. Test files in tests/ - 2 test files with 2 tests each`,
-      rules: `CRITICAL RULES for JavaScript/TypeScript:
-- Use @playwright/test or playwright with a test runner. Use synchronous API where possible.
-- Base URL: "${targetUrl}"
+1. package.json with "type":"module" and devDependency "@playwright/test": "^1.48.0"; scripts: {"test":"playwright test"}
+2. playwright.config.js - exports default from defineConfig({ testDir: './tests', use: { baseURL: process.env.BASE_URL || '${targetUrl}', headless: process.env.HEADED !== 'true', browserName: process.env.BROWSER || 'chromium' }, projects: [{ name: process.env.BROWSER || 'chromium' }] }) — import defineConfig from '@playwright/test'. Do NOT use devices.
+3. Page object .js files in pages/ - 2-3 page classes. Each class exported with ES module syntax (export class LoginPage {}). Constructor takes (page) only — baseURL comes from config. Methods are async.
+4. Test .js files in tests/ - 2 test files with 2 tests each using @playwright/test (import { test, expect } from '@playwright/test')`,
+      rules: `CRITICAL RULES for JavaScript:
+- Use @playwright/test ONLY (not raw playwright, not Jest/Mocha). Tests use: import { test, expect } from '@playwright/test'
+- Use ES modules (package.json has "type":"module"). All imports use import/export, not require.
+- Page object constructors take ONE argument: (page). Do NOT pass baseURL to constructors — Playwright's config handles it, tests use relative paths like page.goto('/').
+- Tests MUST use async functions: test('name', async ({ page }) => { ... })
+- Use await on every Playwright call
 - Use the REAL selectors from the page analysis above
+- For assertions, prefer expect(page).toHaveTitle(...), expect(page).toHaveURL(...), expect(locator).toBeVisible() — these auto-retry
+- Do NOT use waitForSelector or waitForTimeout in tests; rely on auto-retrying matchers
 - Do NOT assume credentials; do NOT interact with cookie banners or modals
-- Keep tests SIMPLE; prefer data-testid, aria-label, or CSS selectors`
+- Keep tests SIMPLE; prefer data-testid, aria-label, or CSS selectors over text matching
+- playwright.config.js MUST NOT pin a reporter (the runner passes --reporter at invocation time)`
     };
   }
   // Default: Python
@@ -315,6 +322,12 @@ function detectLanguage(files) {
   });
   if (hasCSharp) return 'csharp';
 
+  const hasJavaScript = files.some((f) => {
+    const n = (f.name || '').toLowerCase();
+    return n === 'package.json' || n === 'playwright.config.js' || n === 'playwright.config.mjs' || n === 'playwright.config.ts';
+  });
+  if (hasJavaScript) return 'javascript';
+
   const hasPython = files.some((f) => {
     const n = (f.name || '').toLowerCase();
     const p = (f.path || '').toLowerCase();
@@ -396,6 +409,9 @@ app.post("/api/run-tests", async (req, res) => {
     if (language === 'csharp') {
       console.log("Routing to C# test execution");
       await runCSharpTests(tempDir, files, selectedBrowser, headed, sendEvent);
+    } else if (language === 'javascript') {
+      console.log("Routing to JavaScript test execution");
+      await runJavaScriptTests(tempDir, files, selectedBrowser, headed, sendEvent);
     } else {
       console.log("Routing to Python test execution");
       await runPythonTests(tempDir, files, selectedBrowser, headed, sendEvent);
@@ -584,6 +600,117 @@ async function runPythonTests(tempDir, files, selectedBrowser, headed, sendEvent
       resolve();
     });
   });
+}
+
+// JavaScript (Playwright) test execution
+async function runJavaScriptTests(tempDir, files, selectedBrowser, headed, sendEvent) {
+  sendEvent('status', 'Installing npm dependencies...');
+
+  const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+
+  const npmInstall = spawn(npmCmd, ['install', '--no-audit', '--no-fund'], { cwd: tempDir });
+  npmInstall.stdout.on('data', (d) => sendEvent('pip', d.toString()));
+  npmInstall.stderr.on('data', (d) => sendEvent('pip', d.toString()));
+  await new Promise((resolve, reject) => {
+    npmInstall.on('close', (code) => code === 0 ? resolve() : reject(new Error(`npm install failed with code ${code}`)));
+    npmInstall.on('error', reject);
+  });
+
+  sendEvent('status', `Installing Playwright ${selectedBrowser} browser...`);
+  const pwInstall = spawn(npx, ['playwright', 'install', selectedBrowser], { cwd: tempDir });
+  pwInstall.stdout.on('data', (d) => sendEvent('pip', d.toString()));
+  pwInstall.stderr.on('data', (d) => sendEvent('pip', d.toString()));
+  await new Promise((resolve) => {
+    pwInstall.on('close', () => resolve());
+    pwInstall.on('error', () => resolve());
+  });
+
+  sendEvent('status', `Running tests on ${selectedBrowser}${headed ? ' (headed)' : ''}...`);
+
+  const reportPath = join(tempDir, 'report.json');
+  const testEnv = {
+    ...process.env,
+    BROWSER: selectedBrowser,
+    HEADED: headed ? 'true' : 'false',
+    PLAYWRIGHT_JSON_OUTPUT_NAME: reportPath,
+    CI: '1'
+  };
+
+  const testProcess = spawn(npx, [
+    'playwright', 'test',
+    `--project=${selectedBrowser}`,
+    '--reporter=list,json'
+  ], { cwd: tempDir, env: testEnv });
+
+  testProcess.stdout.on('data', (d) => sendEvent('test', d.toString()));
+  testProcess.stderr.on('data', (d) => sendEvent('test', d.toString()));
+
+  await new Promise((resolve) => {
+    testProcess.on('close', async (code) => {
+      try {
+        const reportContent = await readFile(reportPath, 'utf-8');
+        const report = JSON.parse(reportContent);
+        sendEvent('report', normalizePlaywrightJson(report));
+      } catch (e) {
+        console.log('Could not read Playwright JSON report:', e.message);
+      }
+      sendEvent('complete', { exitCode: code });
+      resolve();
+    });
+    testProcess.on('error', (err) => {
+      sendEvent('error', err.message);
+      resolve();
+    });
+  });
+}
+
+// Normalize Playwright's JSON reporter output to the common report shape
+function normalizePlaywrightJson(report) {
+  const tests = [];
+  let passed = 0, failed = 0, skipped = 0;
+  let totalDuration = 0;
+
+  const walk = (suite, parentTitles = []) => {
+    const titles = [...parentTitles, suite.title].filter(Boolean);
+    for (const spec of suite.specs || []) {
+      for (const t of spec.tests || []) {
+        for (const r of t.results || []) {
+          const outcome = r.status === 'passed' ? 'passed'
+            : r.status === 'skipped' ? 'skipped'
+            : 'failed';
+          if (outcome === 'passed') passed++;
+          else if (outcome === 'skipped') skipped++;
+          else failed++;
+          const durationSec = (r.duration || 0) / 1000;
+          totalDuration += durationSec;
+          const errMsg = (r.errors || []).map(e => e.message || e.stack || '').join('\n') || null;
+          tests.push({
+            nodeid: [...titles, spec.title].filter(Boolean).join(' › '),
+            outcome,
+            duration: durationSec,
+            error: errMsg,
+            stdout: (r.stdout || []).map(s => s.text || '').join('') || null,
+            stderr: (r.stderr || []).map(s => s.text || '').join('') || null
+          });
+        }
+      }
+    }
+    for (const child of suite.suites || []) walk(child, titles);
+  };
+
+  for (const suite of report.suites || []) walk(suite);
+
+  return {
+    summary: {
+      total: passed + failed + skipped,
+      passed, failed, skipped, error: 0,
+      duration: totalDuration
+    },
+    tests,
+    environment: {},
+    created: new Date().toISOString()
+  };
 }
 
 // C# test execution
