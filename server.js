@@ -39,8 +39,26 @@ function getLanguagePrompt(language, targetUrl) {
    <PackageReference Include="NUnit" Version="4.0.1" />
    <PackageReference Include="NUnit3TestAdapter" Version="4.5.0" />
    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
-2. Page object .cs files in Pages/ - 2-3 page classes for this site
-3. Test .cs files in Tests/ - 2 test files with 2 tests each using NUnit [Test]`,
+2. .env file at project root with exactly:
+     BROWSER=chromium
+     HEADED=false
+3. Makefile at project root with these targets (use tab indentation, not spaces):
+     Top of file:
+       ifneq (,\$(wildcard .env))
+         include .env
+         export
+       endif
+       BROWSER ?= chromium
+       HEADED ?= false
+     Targets (each runs: BROWSER=<value> HEADED=<value> dotnet test -c Release):
+       .PHONY: test test-chromium test-firefox test-webkit test-headed test-firefox-headed test-webkit-headed
+       test: -> uses \$(BROWSER) and \$(HEADED)
+       test-chromium / test-firefox / test-webkit -> override BROWSER, pass \$(HEADED)
+       test-headed -> \$(BROWSER) with HEADED=true
+       test-firefox-headed / test-webkit-headed -> override both
+4. Page object .cs files in Pages/ - 2-3 page classes for this site
+5. Test .cs files in Tests/ - 2 test files with 2 tests each using NUnit [Test]
+6. README.md MUST document: editing .env to change defaults, plus "make test-firefox" / "make test-headed" / etc. for one-off overrides.`,
       rules: `CRITICAL RULES for C#:
 - EVERY test file MUST start with: using NUnit.Framework; using Microsoft.Playwright;
 - EVERY page object MUST start with: using Microsoft.Playwright;
@@ -111,9 +129,28 @@ function getLanguagePrompt(language, targetUrl) {
   return {
     fileList: `Generate these files (keep code concise):
 1. requirements.txt - just: playwright, pytest, pytest-playwright, pytest-json-report
-2. conftest.py - IMPORTANT: use @pytest.fixture(scope="session") for base_url fixture, return "${targetUrl}"
-3. pages/ - Create 2-3 page object files appropriate for this site
-4. tests/ - Create 2 test files with 2 tests each`,
+2. .env file at project root with exactly:
+     BROWSER=chromium
+     HEADED=false
+3. Makefile at project root with these targets (use tab indentation, not spaces):
+     Top of file:
+       ifneq (,\$(wildcard .env))
+         include .env
+         export
+       endif
+       BROWSER ?= chromium
+       HEADED ?= false
+       HEADED_FLAG := \$(if \$(filter true,\$(HEADED)),--headed,)
+     Targets:
+       .PHONY: test test-chromium test-firefox test-webkit test-headed test-firefox-headed test-webkit-headed
+       test: -> pytest --browser=\$(BROWSER) \$(HEADED_FLAG)
+       test-chromium / test-firefox / test-webkit -> pytest --browser=<name> \$(HEADED_FLAG)
+       test-headed -> pytest --browser=\$(BROWSER) --headed
+       test-firefox-headed / test-webkit-headed -> pytest --browser=<name> --headed
+4. conftest.py - IMPORTANT: use @pytest.fixture(scope="session") for base_url fixture, return "${targetUrl}"
+5. pages/ - Create 2-3 page object files appropriate for this site
+6. tests/ - Create 2 test files with 2 tests each
+7. README.md MUST document: editing .env to change defaults, plus "make test-firefox" / "make test-headed" / etc. for one-off overrides, AND direct "pytest --browser=firefox" as a fallback.`,
     rules: `CRITICAL RULES:
 - Use SYNCHRONOUS Playwright API only (from playwright.sync_api import Page)
 - Do NOT use async/await anywhere
