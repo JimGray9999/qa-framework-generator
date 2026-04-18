@@ -845,7 +845,9 @@ async function runJavaTests(tempDir, files, selectedBrowser, headed, sendEvent) 
   const testEnv = {
     ...process.env,
     BROWSER: selectedBrowser,
-    HEADED: headed ? 'true' : 'false'
+    HEADED: headed ? 'true' : 'false',
+    // Silence sun.misc.Unsafe warnings from Maven's Guice on JDK 24+
+    MAVEN_OPTS: [process.env.MAVEN_OPTS, '--sun-misc-unsafe-memory-access=allow'].filter(Boolean).join(' ')
   };
 
   sendEvent('status', 'Resolving Maven dependencies...');
