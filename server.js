@@ -79,7 +79,7 @@ function getLanguagePrompt(language, targetUrl) {
     return {
       fileList: `Generate these files (keep code concise):
 1. package.json with "type":"module" and devDependency "@playwright/test": "^1.48.0"; scripts: {"test":"playwright test"}
-2. playwright.config.js - exports default from defineConfig({ testDir: './tests', use: { baseURL: process.env.BASE_URL || '${targetUrl}', headless: process.env.HEADED !== 'true', browserName: process.env.BROWSER || 'chromium' }, projects: [{ name: process.env.BROWSER || 'chromium' }] }) — import defineConfig from '@playwright/test'. Do NOT use devices.
+2. playwright.config.js - exports default from defineConfig({ testDir: './tests', testMatch: '**/*.js', use: { baseURL: process.env.BASE_URL || '${targetUrl}', headless: process.env.HEADED !== 'true', browserName: process.env.BROWSER || 'chromium' }, projects: [{ name: process.env.BROWSER || 'chromium' }] }) — import defineConfig from '@playwright/test'. Do NOT use devices. testMatch MUST be '**/*.js' so test_*.js files are discovered.
 3. Page object .js files in pages/ - 2-3 page classes. Each class exported with ES module syntax (export class LoginPage {}). Constructor takes (page) only — baseURL comes from config. Methods are async.
 4. Test .js files in tests/ - 2 test files with 2 tests each using @playwright/test (import { test, expect } from '@playwright/test')`,
       rules: `CRITICAL RULES for JavaScript:
