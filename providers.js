@@ -1,5 +1,20 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { spawn } from "child_process";
+import { existsSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
+
+function resolveClaudeBin() {
+  if (process.env.CLAUDE_BIN && existsSync(process.env.CLAUDE_BIN)) return process.env.CLAUDE_BIN;
+  const candidates = [
+    join(homedir(), ".local/bin/claude"),
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude",
+    join(homedir(), ".claude/local/claude")
+  ];
+  for (const c of candidates) if (existsSync(c)) return c;
+  return "claude"; // fall back to PATH
+}
 
 const SYSTEM_PROMPT = `You are a code generation assistant that outputs ONLY valid JSON.
 
@@ -55,9 +70,11 @@ async function callOpenAI({ apiKey, userPrompt, model = "gpt-4o" }) {
 
 // Calls the locally installed Claude Code CLI (`claude -p`) which uses the user's
 // logged-in session — no API key required.
-async function callClaudeLocal({ userPrompt, claudeBin = "claude" }) {
+async function callClaudeLocal({ userPrompt }) {
+  const claudeBin = resolveClaudeBin();
   return await new Promise((resolve, reject) => {
     const fullPrompt = `${SYSTEM_PROMPT}\n\n${userPrompt}`;
+    console.log(`[claude-local] using binary: ${claudeBin}`);
     const proc = spawn(claudeBin, ["-p", "--output-format", "text"], {
       stdio: ["pipe", "pipe", "pipe"]
     });
@@ -98,7 +115,8 @@ export async function generateWithProvider({ provider, apiKey, userPrompt, model
 
 export async function detectProviders() {
   const claudeLocal = await new Promise((resolve) => {
-    const proc = spawn("claude", ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
+    const bin = resolveClaudeBin();
+    const proc = spawn(bin, ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
     proc.on("error", () => resolve(false));
     proc.on("close", (code) => resolve(code === 0));
   });
