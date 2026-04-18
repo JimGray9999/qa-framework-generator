@@ -716,6 +716,7 @@ const QAFrameworkGenerator = () => {
               <option value="python">Python</option>
               <option value="java">Java</option>
               <option value="javascript">JavaScript</option>
+              <option value="typescript">TypeScript</option>
               <option value="C#">C#</option>
             </select>
           </div>
