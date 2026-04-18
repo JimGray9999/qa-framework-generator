@@ -81,16 +81,47 @@ function getLanguagePrompt(language, targetUrl) {
   if (lang === 'java') {
     return {
       fileList: `Generate these files (keep code concise):
-1. pom.xml - Maven with Playwright and JUnit 5
-2. Page object .java files in src/main/java/pages/ - 2-3 page classes
-3. Test .java files in src/test/java/ - 2 test classes with 2 tests each`,
+1. pom.xml with:
+   - groupId=com.example, artifactId=qa-framework, version=1.0.0, packaging=jar
+   - <properties>: maven.compiler.source=17, maven.compiler.target=17, project.build.sourceEncoding=UTF-8
+   - Dependencies: com.microsoft.playwright:playwright:1.48.0 (scope default), org.junit.jupiter:junit-jupiter:5.10.2 (scope test)
+   - <build><plugins>: maven-compiler-plugin 3.13.0, maven-surefire-plugin 3.2.5 (surefire MUST have <configuration><useModulePath>false</useModulePath></configuration> so JUnit 5 runs).
+   - Surefire also sets systemPropertyVariables so BROWSER and HEADED env vars propagate: <configuration><environmentVariables><BROWSER>\${env.BROWSER}</BROWSER><HEADED>\${env.HEADED}</HEADED></environmentVariables></configuration>
+2. .env file at project root with exactly:
+     BROWSER=chromium
+     HEADED=false
+3. Makefile at project root (tab indentation) with top:
+     ifneq (,\$(wildcard .env))
+       include .env
+       export
+     endif
+     BROWSER ?= chromium
+     HEADED ?= false
+   Targets:
+     .PHONY: test test-chromium test-firefox test-webkit test-headed test-firefox-headed test-webkit-headed
+     test: -> BROWSER=\$(BROWSER) HEADED=\$(HEADED) mvn -q test
+     test-chromium / test-firefox / test-webkit -> override BROWSER
+     test-headed -> HEADED=true
+     test-firefox-headed / test-webkit-headed -> both
+4. Page object .java files in src/main/java/pages/ - 2-3 page classes. Package "pages". Each class has a constructor taking (com.microsoft.playwright.Page page) only — do NOT pass base URL. Methods are regular (sync) methods. Provide an isLoaded() -> boolean with defensive checks.
+5. Test .java files in src/test/java/ - 2 test classes with 2 tests each. Package "tests". Each class uses JUnit 5 @Test, with @BeforeAll static setUp() / @AfterAll static tearDown() that:
+   - Creates Playwright via Playwright.create()
+   - Reads browser name from System.getenv().getOrDefault("BROWSER", "chromium")
+   - Reads headed from "true".equals(System.getenv("HEADED"))
+   - Selects browser via switch on name (chromium / firefox / webkit -> playwright.chromium()/firefox()/webkit())
+   - Launches with new BrowserType.LaunchOptions().setHeadless(!headed)
+   - @BeforeEach creates a new BrowserContext and Page; @AfterEach closes them. Use page.navigate("${targetUrl}") as the base.
+6. README.md MUST document: prerequisites (JDK 17+, Maven 3.8+), install (mvn install -DskipTests), editing .env, using make targets (make test-firefox / make test-headed / etc.), and direct "BROWSER=firefox mvn test" as a fallback.`,
       rules: `CRITICAL RULES for Java:
-- Use com.microsoft.playwright and JUnit 5. Use synchronous Playwright API.
-- Page objects take Page and base URL; isLoaded() returns boolean with defensive checks
-- Base URL: "${targetUrl}"
+- Use com.microsoft.playwright (sync API — the only Java API) and JUnit 5 (org.junit.jupiter.api).
+- Page objects take ONE constructor arg: Page. Do NOT pass baseURL to constructors.
+- Tests drive navigation via page.navigate("${targetUrl}" + "/path") — the base URL is embedded in test code (Playwright Java has no native baseURL option).
+- Browser selection via System.getenv; default chromium.
 - Use the REAL selectors from the page analysis above
+- For isLoaded(): check page.title() contains expected text, or page.url() contains expected path, or page.locator(...).count() > 0
 - Do NOT assume credentials; do NOT interact with cookie banners or modals
-- Keep tests SIMPLE; prefer data-testid, aria-label, or CSS selectors`
+- Keep tests SIMPLE; prefer data-testid, aria-label, or CSS selectors
+- Every test class needs a static Playwright+Browser created in @BeforeAll and closed in @AfterAll. Use try-with-resources only inside helpers; static fields + @AfterAll is the correct pattern here.`
     };
   }
   if (lang === 'typescript') {
@@ -403,6 +434,12 @@ function detectLanguage(files) {
   });
   if (hasCSharp) return 'csharp';
 
+  const hasJava = files.some((f) => {
+    const n = (f.name || '').toLowerCase();
+    return n === 'pom.xml' || n.endsWith('.java');
+  });
+  if (hasJava) return 'java';
+
   const hasTypeScript = files.some((f) => {
     const n = (f.name || '').toLowerCase();
     return n === 'tsconfig.json' || n === 'playwright.config.ts' || n.endsWith('.ts');
@@ -499,6 +536,9 @@ app.post("/api/run-tests", async (req, res) => {
     } else if (language === 'javascript' || language === 'typescript') {
       console.log(`Routing to ${language} test execution`);
       await runJavaScriptTests(tempDir, files, selectedBrowser, headed, sendEvent);
+    } else if (language === 'java') {
+      console.log("Routing to Java test execution");
+      await runJavaTests(tempDir, files, selectedBrowser, headed, sendEvent);
     } else {
       console.log("Routing to Python test execution");
       await runPythonTests(tempDir, files, selectedBrowser, headed, sendEvent);
@@ -794,6 +834,119 @@ function normalizePlaywrightJson(report) {
       passed, failed, skipped, error: 0,
       duration: totalDuration
     },
+    tests,
+    environment: {},
+    created: new Date().toISOString()
+  };
+}
+
+// Java (Maven + Playwright) test execution
+async function runJavaTests(tempDir, files, selectedBrowser, headed, sendEvent) {
+  const testEnv = {
+    ...process.env,
+    BROWSER: selectedBrowser,
+    HEADED: headed ? 'true' : 'false'
+  };
+
+  sendEvent('status', 'Resolving Maven dependencies...');
+  const resolve = spawn('mvn', ['-q', '-B', 'dependency:resolve'], { cwd: tempDir, env: testEnv });
+  resolve.stdout.on('data', (d) => sendEvent('pip', d.toString()));
+  resolve.stderr.on('data', (d) => sendEvent('pip', d.toString()));
+  await new Promise((res, rej) => {
+    resolve.on('close', (code) => code === 0 ? res() : rej(new Error(`mvn dependency:resolve failed with code ${code}`)));
+    resolve.on('error', rej);
+  });
+
+  sendEvent('status', `Installing Playwright ${selectedBrowser} browser...`);
+  // Playwright Java exposes a CLI main class. Maven's exec plugin isn't declared,
+  // so use java -cp with the resolved classpath. Easiest: let mvn run it.
+  const pwInstall = spawn('mvn', [
+    '-q', '-B',
+    'exec:java',
+    '-Dexec.mainClass=com.microsoft.playwright.CLI',
+    `-Dexec.args=install ${selectedBrowser}`,
+    '-Dexec.classpathScope=test'
+  ], { cwd: tempDir, env: testEnv });
+  pwInstall.stdout.on('data', (d) => sendEvent('pip', d.toString()));
+  pwInstall.stderr.on('data', (d) => sendEvent('pip', d.toString()));
+  await new Promise((res) => {
+    pwInstall.on('close', () => res());
+    pwInstall.on('error', () => res());
+  });
+
+  sendEvent('status', `Running tests on ${selectedBrowser}${headed ? ' (headed)' : ''}...`);
+  const testProc = spawn('mvn', ['-B', 'test'], { cwd: tempDir, env: testEnv });
+  testProc.stdout.on('data', (d) => sendEvent('test', d.toString()));
+  testProc.stderr.on('data', (d) => sendEvent('test', d.toString()));
+
+  await new Promise((res) => {
+    testProc.on('close', async (code) => {
+      try {
+        const { readdir } = await import('fs/promises');
+        const reportDir = join(tempDir, 'target', 'surefire-reports');
+        const dirFiles = await readdir(reportDir);
+        const xmlFiles = dirFiles.filter(f => f.startsWith('TEST-') && f.endsWith('.xml'));
+        const xmlContents = await Promise.all(xmlFiles.map(f => readFile(join(reportDir, f), 'utf-8')));
+        sendEvent('report', parseSurefireReports(xmlContents));
+      } catch (e) {
+        console.log('Could not read Surefire reports:', e.message);
+      }
+      sendEvent('complete', { exitCode: code });
+      res();
+    });
+    testProc.on('error', (err) => {
+      sendEvent('error', err.message);
+      res();
+    });
+  });
+}
+
+// Parse Surefire XML reports (one per test class) to common report shape
+function parseSurefireReports(xmlContents) {
+  const tests = [];
+  let total = 0, passed = 0, failed = 0, skipped = 0, totalDuration = 0;
+
+  for (const xml of xmlContents) {
+    const testcaseRegex = /<testcase\s+([^>]*?)(\/>|>([\s\S]*?)<\/testcase>)/g;
+    let m;
+    while ((m = testcaseRegex.exec(xml)) !== null) {
+      const attrs = m[1];
+      const body = m[3] || '';
+      const nameMatch = attrs.match(/name="([^"]+)"/);
+      const classMatch = attrs.match(/classname="([^"]+)"/);
+      const timeMatch = attrs.match(/time="([^"]+)"/);
+      const name = nameMatch ? nameMatch[1] : '(unnamed)';
+      const className = classMatch ? classMatch[1] : '';
+      const duration = timeMatch ? parseFloat(timeMatch[1]) : 0;
+      totalDuration += duration;
+
+      let outcome = 'passed';
+      let error = null;
+      if (body.includes('<skipped')) {
+        outcome = 'skipped';
+        skipped++;
+      } else if (body.includes('<failure') || body.includes('<error')) {
+        outcome = 'failed';
+        failed++;
+        const msg = body.match(/<(?:failure|error)[^>]*message="([^"]*)"/);
+        error = msg ? msg[1] : body.replace(/<[^>]+>/g, '').trim().slice(0, 500);
+      } else {
+        passed++;
+      }
+      total++;
+      tests.push({
+        nodeid: className ? `${className}.${name}` : name,
+        outcome,
+        duration,
+        error,
+        stdout: null,
+        stderr: null
+      });
+    }
+  }
+
+  return {
+    summary: { total, passed, failed, error: 0, skipped, duration: totalDuration },
     tests,
     environment: {},
     created: new Date().toISOString()
