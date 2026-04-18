@@ -1,4 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+
+const loadSettings = () => {
+  try {
+    const raw = localStorage.getItem('qafg.settings');
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return { provider: 'claude-local', apiKey: '' };
+};
 
 const QAFrameworkGenerator = () => {
   const [config, setConfig] = useState({
@@ -8,6 +16,21 @@ const QAFrameworkGenerator = () => {
     browser: 'chromium',
     headed: false
   });
+  const [settings, setSettings] = useState(loadSettings);
+  const [showSettings, setShowSettings] = useState(false);
+  const [providerStatus, setProviderStatus] = useState(null);
+
+  useEffect(() => {
+    fetch('http://localhost:3001/api/providers')
+      .then(r => r.json())
+      .then(d => setProviderStatus(d.providers))
+      .catch(() => {});
+  }, []);
+
+  const saveSettings = (next) => {
+    setSettings(next);
+    localStorage.setItem('qafg.settings', JSON.stringify(next));
+  };
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedFiles, setGeneratedFiles] = useState(null);
   const [activeFile, setActiveFile] = useState(null);
@@ -52,7 +75,9 @@ const QAFrameworkGenerator = () => {
         body: JSON.stringify({
           language: config.language,
           framework: config.framework,
-          targetUrl: config.targetUrl
+          targetUrl: config.targetUrl,
+          provider: settings.provider,
+          apiKey: settings.apiKey || undefined
         })
       });
 
@@ -577,13 +602,40 @@ const QAFrameworkGenerator = () => {
       fontFamily: '"JetBrains Mono", "Fira Code", monospace',
       padding: '24px'
     }}>
+      {showSettings && (
+        <SettingsModal
+          settings={settings}
+          providerStatus={providerStatus}
+          onSave={(s) => { saveSettings(s); setShowSettings(false); }}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
       {/* Header */}
       <div style={{
         textAlign: 'center',
         marginBottom: '32px',
         paddingBottom: '24px',
-        borderBottom: '1px solid rgba(99, 102, 241, 0.3)'
+        borderBottom: '1px solid rgba(99, 102, 241, 0.3)',
+        position: 'relative'
       }}>
+        <button
+          onClick={() => setShowSettings(true)}
+          style={{
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            background: 'rgba(99, 102, 241, 0.15)',
+            border: '1px solid rgba(99, 102, 241, 0.4)',
+            color: '#a5b4fc',
+            padding: '8px 14px',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            fontSize: '0.85rem',
+            fontFamily: 'inherit'
+          }}
+        >
+          ⚙ Settings {settings.provider ? `· ${settings.provider}` : ''}
+        </button>
         <h1 style={{
           fontSize: '2rem',
           fontWeight: '700',
@@ -1328,6 +1380,118 @@ const QAFrameworkGenerator = () => {
           background: rgba(99, 102, 241, 0.5);
         }
       `}</style>
+    </div>
+  );
+};
+
+const SettingsModal = ({ settings, providerStatus, onSave, onClose }) => {
+  const [draft, setDraft] = useState(settings);
+  const providers = [
+    { id: 'claude-local', label: 'Claude (Local CLI) — uses your installed Claude Code, no key needed' },
+    { id: 'anthropic-api', label: 'Anthropic API (Claude)' },
+    { id: 'openai', label: 'OpenAI (ChatGPT)' }
+  ];
+  const current = providerStatus?.[draft.provider];
+  const requiresKey = current?.requiresKey;
+  const hasEnvKey = current?.hasEnvKey;
+  const available = current?.available !== false;
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'rgba(30,30,45,0.98)', border: '1px solid rgba(99,102,241,0.4)',
+          borderRadius: '12px', padding: '28px', width: '520px', maxWidth: '90vw',
+          color: '#e0e0e0', fontFamily: 'inherit'
+        }}
+      >
+        <h2 style={{ marginTop: 0, color: '#a5b4fc', fontSize: '1.1rem' }}>⚙ Settings</h2>
+        <p style={{ color: '#9ca3af', fontSize: '0.8rem', marginTop: '-8px' }}>
+          Choose which AI generates your test framework. API keys are stored locally in your browser only.
+        </p>
+
+        <label style={{ display: 'block', marginTop: '16px', fontSize: '0.75rem', color: '#9ca3af', textTransform: 'uppercase' }}>
+          AI Provider
+        </label>
+        <select
+          value={draft.provider}
+          onChange={(e) => setDraft({ ...draft, provider: e.target.value })}
+          style={{
+            width: '100%', marginTop: '6px', padding: '10px',
+            background: 'rgba(15,15,25,0.8)', color: '#e0e0e0',
+            border: '1px solid rgba(99,102,241,0.3)', borderRadius: '8px',
+            fontFamily: 'inherit', fontSize: '0.85rem'
+          }}
+        >
+          {providers.map(p => {
+            const st = providerStatus?.[p.id];
+            const disabled = st && st.available === false;
+            return (
+              <option key={p.id} value={p.id} disabled={disabled}>
+                {p.label}{disabled ? ' (not installed)' : ''}
+              </option>
+            );
+          })}
+        </select>
+
+        {draft.provider === 'claude-local' && (
+          <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(99,102,241,0.08)', borderRadius: '8px', fontSize: '0.8rem', color: '#c7d2fe' }}>
+            {available
+              ? '✓ Local Claude CLI detected. No API key required — uses your existing Claude Code session.'
+              : '✗ Local Claude CLI not detected on server. Install from https://claude.com/claude-code.'}
+          </div>
+        )}
+
+        {requiresKey && (
+          <>
+            <label style={{ display: 'block', marginTop: '16px', fontSize: '0.75rem', color: '#9ca3af', textTransform: 'uppercase' }}>
+              API Key {hasEnvKey ? '(optional — server has one in env)' : '(optional)'}
+            </label>
+            <input
+              type="password"
+              value={draft.apiKey}
+              onChange={(e) => setDraft({ ...draft, apiKey: e.target.value })}
+              placeholder={hasEnvKey ? 'Leave blank to use server env key' : 'sk-...'}
+              style={{
+                width: '100%', marginTop: '6px', padding: '10px',
+                background: 'rgba(15,15,25,0.8)', color: '#e0e0e0',
+                border: '1px solid rgba(99,102,241,0.3)', borderRadius: '8px',
+                fontFamily: 'inherit', fontSize: '0.85rem', boxSizing: 'border-box'
+              }}
+            />
+          </>
+        )}
+
+        <div style={{ marginTop: '24px', display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+          <button
+            onClick={onClose}
+            style={{
+              background: 'transparent', color: '#9ca3af',
+              border: '1px solid rgba(156,163,175,0.3)', padding: '8px 16px',
+              borderRadius: '8px', cursor: 'pointer', fontFamily: 'inherit'
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onSave(draft)}
+            style={{
+              background: 'linear-gradient(90deg, #6366f1, #a855f7)', color: 'white',
+              border: 'none', padding: '8px 18px', borderRadius: '8px',
+              cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600
+            }}
+          >
+            Save
+          </button>
+        </div>
+      </div>
     </div>
   );
 };
