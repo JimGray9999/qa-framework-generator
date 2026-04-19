@@ -58,6 +58,7 @@ const QAFrameworkGenerator = () => {
   const [testStatus, setTestStatus] = useState(null);
   const [testReport, setTestReport] = useState(null);
   const [expandedTests, setExpandedTests] = useState({});
+  const [activeTab, setActiveTab] = useState('config');
 
   const frameworks = {
     python: ['playwright', 'selenium', 'pytest-bdd'],
@@ -120,6 +121,7 @@ const QAFrameworkGenerator = () => {
             setActiveFile(result.files[0]?.name);
             addLog(`✓ Generated ${result.files.length} files`);
             addLog('Framework ready!');
+            setActiveTab('explorer');
           } else {
             throw new Error('Response missing files array');
           }
@@ -154,6 +156,7 @@ const QAFrameworkGenerator = () => {
     if (!generatedFiles) return;
     
     setIsRunningTests(true);
+    setActiveTab('testrun');
     setTestOutput([]);
     setTestStatus(null);
     setTestReport(null);
@@ -629,13 +632,43 @@ const QAFrameworkGenerator = () => {
     );
   };
 
+  const tabs = [
+    { id: 'config',   label: '⚡ Framework Config', locked: false },
+    { id: 'explorer', label: '📁 File Explorer',    locked: !generatedFiles },
+    { id: 'testrun',  label: '🧪 Test Run & Report', locked: !generatedFiles },
+  ];
+
+  const inputStyle = {
+    width: '100%',
+    padding: '10px 12px',
+    background: 'rgba(15, 15, 25, 0.8)',
+    border: '1px solid rgba(99, 102, 241, 0.3)',
+    borderRadius: '8px',
+    color: '#e0e0e0',
+    fontSize: '0.9rem',
+    cursor: 'pointer',
+    boxSizing: 'border-box',
+    fontFamily: 'inherit',
+  };
+  const labelStyle = {
+    display: 'block',
+    fontSize: '0.75rem',
+    color: '#9ca3af',
+    marginBottom: '6px',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+  };
+
   return (
     <div style={{
       minHeight: '100vh',
       background: 'linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 50%, #0f0f1a 100%)',
       color: '#e0e0e0',
       fontFamily: '"JetBrains Mono", "Fira Code", monospace',
-      padding: '24px'
+      display: 'flex',
+      flexDirection: 'column',
+      height: '100vh',
+      overflow: 'hidden',
     }}>
       {showSettings && (
         <SettingsModal
@@ -645,807 +678,438 @@ const QAFrameworkGenerator = () => {
           onClose={() => setShowSettings(false)}
         />
       )}
-      {/* Header */}
+
+      {/* ── Header ── */}
       <div style={{
-        textAlign: 'center',
-        marginBottom: '32px',
-        paddingBottom: '24px',
-        borderBottom: '1px solid rgba(99, 102, 241, 0.3)',
-        position: 'relative'
+        padding: '16px 24px',
+        borderBottom: '1px solid rgba(99, 102, 241, 0.2)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexShrink: 0,
       }}>
+        <div>
+          <h1 style={{
+            fontSize: '1.4rem',
+            fontWeight: '700',
+            background: 'linear-gradient(90deg, #818cf8, #c084fc, #f472b6)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            margin: 0,
+          }}>
+            QA Framework Generator
+          </h1>
+          <p style={{ color: '#4b5563', fontSize: '0.75rem', margin: '2px 0 0' }}>
+            AI-powered test automation scaffold
+          </p>
+        </div>
         <button
           onClick={() => setShowSettings(true)}
           style={{
-            position: 'absolute',
-            top: 0,
-            right: 0,
             background: 'rgba(99, 102, 241, 0.15)',
             border: '1px solid rgba(99, 102, 241, 0.4)',
             color: '#a5b4fc',
             padding: '8px 14px',
             borderRadius: '8px',
             cursor: 'pointer',
-            fontSize: '0.85rem',
-            fontFamily: 'inherit'
+            fontSize: '0.82rem',
+            fontFamily: 'inherit',
           }}
         >
           ⚙ Settings {settings.provider ? `· ${settings.provider}` : ''}
         </button>
-        <h1 style={{
-          fontSize: '2rem',
-          fontWeight: '700',
-          background: 'linear-gradient(90deg, #818cf8, #c084fc, #f472b6)',
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent',
-          marginBottom: '8px'
-        }}>
-          QA Automation Framework Generator
-        </h1>
-        <p style={{ color: '#6b7280', fontSize: '0.9rem' }}>
-          Select your framework and language, and test
-        </p>
       </div>
 
+      {/* ── Tab Bar ── */}
       <div style={{
-        display: 'grid',
-        gridTemplateColumns: generatedFiles ? '280px 1fr 1fr' : '1fr',
-        gap: '24px',
-        maxWidth: '1800px',
-        margin: '0 auto',
-        height: 'calc(100vh - 180px)'
+        display: 'flex',
+        gap: '4px',
+        padding: '12px 24px 0',
+        borderBottom: '1px solid rgba(99, 102, 241, 0.15)',
+        flexShrink: 0,
+        background: 'rgba(10, 10, 20, 0.4)',
       }}>
-        {/* Configuration Panel */}
-        <div style={{
-          background: 'rgba(30, 30, 45, 0.8)',
-          borderRadius: '12px',
-          padding: '24px',
-          border: '1px solid rgba(99, 102, 241, 0.2)',
-          backdropFilter: 'blur(10px)',
-          height: 'fit-content',
-          maxHeight: '100%',
-          overflow: 'auto'
-        }}>
-          <h2 style={{
-            fontSize: '1rem',
-            fontWeight: '600',
-            color: '#a5b4fc',
-            marginBottom: '20px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px'
-          }}>
-            <span style={{ fontSize: '1.2rem' }}>⚡</span> Configuration
-          </h2>
-
-          {/* Language Select */}
-          <div style={{ marginBottom: '16px' }}>
-            <label style={{
-              display: 'block',
-              fontSize: '0.75rem',
-              color: '#9ca3af',
-              marginBottom: '6px',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em'
-            }}>
-              Language
-            </label>
-            <select
-              value={config.language}
-              onChange={(e) => setConfig({
-                ...config,
-                language: e.target.value,
-                framework: frameworks[e.target.value][0]
-              })}
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                background: 'rgba(15, 15, 25, 0.8)',
-                border: '1px solid rgba(99, 102, 241, 0.3)',
-                borderRadius: '8px',
-                color: '#e0e0e0',
-                fontSize: '0.9rem',
-                cursor: 'pointer'
-              }}
-            >
-              <option value="python">Python</option>
-              <option value="java">Java</option>
-              <option value="javascript">JavaScript</option>
-              <option value="typescript">TypeScript</option>
-              <option value="C#">C#</option>
-            </select>
-          </div>
-
-          {/* Framework Select */}
-          <div style={{ marginBottom: '16px' }}>
-            <label style={{
-              display: 'block',
-              fontSize: '0.75rem',
-              color: '#9ca3af',
-              marginBottom: '6px',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em'
-            }}>
-              Framework
-            </label>
-            <select
-              value={config.framework}
-              onChange={(e) => setConfig({ ...config, framework: e.target.value })}
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                background: 'rgba(15, 15, 25, 0.8)',
-                border: '1px solid rgba(99, 102, 241, 0.3)',
-                borderRadius: '8px',
-                color: '#e0e0e0',
-                fontSize: '0.9rem',
-                cursor: 'pointer'
-              }}
-            >
-              {frameworks[config.language].map(fw => (
-                <option key={fw} value={fw}>{fw}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Target URL Input */}
-          <div style={{ marginBottom: '16px' }}>
-            <label style={{
-              display: 'block',
-              fontSize: '0.75rem',
-              color: '#9ca3af',
-              marginBottom: '6px',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em'
-            }}>
-              Target URL
-            </label>
-            
-            {/* Example Sites Dropdown */}
-            <select
-              value=""
-              onChange={(e) => {
-                if (e.target.value) {
-                  setConfig({ ...config, targetUrl: e.target.value });
-                }
-              }}
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                background: 'rgba(15, 15, 25, 0.8)',
-                border: '1px solid rgba(99, 102, 241, 0.3)',
-                borderRadius: '8px',
-                color: '#9ca3af',
-                fontSize: '0.85rem',
-                cursor: 'pointer',
-                marginBottom: '8px'
-              }}
-            >
-              <option value="">📋 Choose an example site...</option>
-              <optgroup label="Recommended Test Sites">
-                <option value="https://www.saucedemo.com">🛒 Sauce Demo (E-commerce)</option>
-                <option value="https://the-internet.herokuapp.com">🧪 The Internet (Selenium examples)</option>
-                <option value="https://automationexercise.com">🏋️ Automation Exercise</option>
-                <option value="https://demoqa.com">📚 DemoQA (ToolsQA)</option>
-                <option value="https://practice.expandtesting.com">🎯 Expand Testing Practice</option>
-              </optgroup>
-              <optgroup label="Real Sites (May Have Bot Protection)">
-                <option value="https://www.wikipedia.org">📖 Wikipedia</option>
-                <option value="https://news.ycombinator.com">🔶 Hacker News</option>
-                <option value="https://www.github.com">🐙 GitHub</option>
-              </optgroup>
-            </select>
-
-            {/* URL Input */}
-            <input
-              type="url"
-              value={config.targetUrl}
-              onChange={(e) => setConfig({ ...config, targetUrl: e.target.value })}
-              placeholder="https://example.com"
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                background: 'rgba(15, 15, 25, 0.8)',
-                border: '1px solid rgba(99, 102, 241, 0.3)',
-                borderRadius: '8px',
-                color: '#e0e0e0',
-                fontSize: '0.9rem',
-                boxSizing: 'border-box'
-              }}
-            />
-            <div style={{
-              fontSize: '0.7rem',
-              color: '#6b7280',
-              marginTop: '4px'
-            }}>
-              Select an example or enter your own URL
-            </div>
-          </div>
-
-          {/* Generate Button */}
+        {tabs.map(tab => (
           <button
-            onClick={generateFramework}
-            disabled={isGenerating}
+            key={tab.id}
+            onClick={() => !tab.locked && setActiveTab(tab.id)}
             style={{
-              width: '100%',
-              marginBottom: '16px',
-              padding: '12px',
-              background: isGenerating
-                ? 'rgba(99, 102, 241, 0.3)'
-                : 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
+              padding: '9px 20px',
+              background: activeTab === tab.id
+                ? 'rgba(99, 102, 241, 0.2)'
+                : 'transparent',
               border: 'none',
-              borderRadius: '8px',
-              color: '#fff',
-              fontSize: '0.95rem',
-              fontWeight: '600',
-              cursor: isGenerating ? 'not-allowed' : 'pointer',
-              transition: 'all 0.2s ease',
+              borderBottom: activeTab === tab.id
+                ? '2px solid #818cf8'
+                : '2px solid transparent',
+              borderRadius: '8px 8px 0 0',
+              color: tab.locked
+                ? '#374151'
+                : activeTab === tab.id ? '#c4b5fd' : '#6b7280',
+              fontSize: '0.82rem',
+              fontWeight: activeTab === tab.id ? '600' : '400',
+              cursor: tab.locked ? 'not-allowed' : 'pointer',
+              fontFamily: 'inherit',
+              whiteSpace: 'nowrap',
+              transition: 'all 0.15s ease',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center',
-              gap: '8px'
+              gap: '6px',
             }}
           >
-            {isGenerating ? (
-              <>
-                <span style={{ display: 'inline-block', animation: 'spin 1s linear infinite' }}>⚙️</span>
-                Generating...
-              </>
-            ) : (
-              <>
-                <span>🚀</span>
-                Generate Framework
-              </>
-            )}
+            {tab.label}
+            {tab.locked && <span style={{ fontSize: '0.65rem', opacity: 0.5 }}>🔒</span>}
           </button>
+        ))}
+      </div>
 
-          {/* Test Run Section Header */}
+      {/* ── Tab Content ── */}
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+
+      {/* ─────────────────────────────────────────
+          TAB 1: FRAMEWORK CONFIG
+      ───────────────────────────────────────── */}
+      {activeTab === 'config' && (
+        <div style={{
+          flex: 1,
+          overflow: 'auto',
+          padding: '28px',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'flex-start',
+        }}>
           <div style={{
-            marginTop: '8px',
-            marginBottom: '14px',
-            paddingTop: '14px',
-            borderTop: '1px solid rgba(99, 102, 241, 0.2)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px'
+            width: '100%',
+            maxWidth: '560px',
+            background: 'rgba(30, 30, 45, 0.8)',
+            borderRadius: '14px',
+            padding: '32px',
+            border: '1px solid rgba(99, 102, 241, 0.2)',
+            backdropFilter: 'blur(10px)',
           }}>
-            <span style={{ fontSize: '1rem' }}>🧪</span>
-            <span style={{
-              fontSize: '0.85rem',
-              fontWeight: 600,
-              color: '#a5b4fc',
-              textTransform: 'uppercase',
-              letterSpacing: '0.06em'
-            }}>
-              Test Run
-            </span>
-          </div>
+            <h2 style={{ fontSize: '1rem', fontWeight: '600', color: '#a5b4fc', marginBottom: '24px', marginTop: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span>⚡</span> Framework Configuration
+            </h2>
 
-          {/* Browser Select */}
-          <div style={{ marginBottom: '16px' }}>
-            <label style={{
-              display: 'block',
-              fontSize: '0.75rem',
-              color: '#9ca3af',
-              marginBottom: '6px',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em'
-            }}>
-              Browser
-            </label>
-            <select
-              value={config.browser}
-              onChange={(e) => setConfig({ ...config, browser: e.target.value })}
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                background: 'rgba(15, 15, 25, 0.8)',
-                border: '1px solid rgba(99, 102, 241, 0.3)',
-                borderRadius: '8px',
-                color: '#e0e0e0',
-                fontSize: '0.9rem',
-                cursor: 'pointer'
-              }}
-            >
-              <option value="chromium">🌐 Chromium</option>
-              <option value="firefox">🦊 Firefox</option>
-              <option value="webkit">🧭 WebKit (Safari)</option>
-            </select>
-          </div>
-
-          {/* Headed Mode Toggle */}
-          <div style={{ marginBottom: '20px' }}>
-            <label style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '12px',
-              cursor: 'pointer',
-              padding: '12px',
-              background: 'rgba(15, 15, 25, 0.5)',
-              borderRadius: '8px',
-              border: '1px solid rgba(99, 102, 241, 0.2)'
-            }}>
-              <div
-                onClick={(e) => {
-                  e.preventDefault();
-                  setConfig({ ...config, headed: !config.headed });
-                }}
-                style={{
-                  width: '44px',
-                  height: '24px',
-                  background: config.headed 
-                    ? 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)'
-                    : 'rgba(75, 85, 99, 0.5)',
-                  borderRadius: '12px',
-                  position: 'relative',
-                  transition: 'background 0.2s ease',
-                  cursor: 'pointer',
-                  flexShrink: 0
-                }}
+            {/* Language */}
+            <div style={{ marginBottom: '18px' }}>
+              <label style={labelStyle}>Language</label>
+              <select
+                value={config.language}
+                onChange={(e) => setConfig({ ...config, language: e.target.value, framework: frameworks[e.target.value][0] })}
+                style={inputStyle}
               >
-                <div style={{
-                  width: '20px',
-                  height: '20px',
-                  background: '#fff',
-                  borderRadius: '50%',
-                  position: 'absolute',
-                  top: '2px',
-                  left: config.headed ? '22px' : '2px',
-                  transition: 'left 0.2s ease',
-                  boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
-                }} />
-              </div>
-              <div>
-                <div style={{
-                  fontSize: '0.85rem',
-                  color: '#e0e0e0',
-                  fontWeight: '500'
-                }}>
-                  {config.headed ? '👁️ Headed Mode' : '👻 Headless Mode'}
-                </div>
-                <div style={{
-                  fontSize: '0.7rem',
-                  color: '#6b7280',
-                  marginTop: '2px'
-                }}>
-                  {config.headed ? 'Watch tests run in browser' : 'Tests run in background'}
-                </div>
-              </div>
-            </label>
-          </div>
+                <option value="python">Python</option>
+                <option value="java">Java</option>
+                <option value="javascript">JavaScript</option>
+                <option value="typescript">TypeScript</option>
+                <option value="C#">C#</option>
+              </select>
+            </div>
 
-          {/* Slow Mo Slider (only when headed) */}
-          {config.headed && (
-            <div style={{
-              marginBottom: '20px',
-              padding: '12px',
-              background: 'rgba(15, 15, 25, 0.5)',
-              borderRadius: '8px',
-              border: '1px solid rgba(99, 102, 241, 0.2)'
-            }}>
-              <div style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '8px'
-              }}>
-                <span style={{ fontSize: '0.85rem', color: '#e0e0e0', fontWeight: 500 }}>
-                  🐢 Slow Mo
-                </span>
-                <span style={{ fontSize: '0.8rem', color: '#a5b4fc', fontFamily: 'monospace' }}>
-                  {config.slowMo}ms
-                </span>
-              </div>
+            {/* Framework */}
+            <div style={{ marginBottom: '18px' }}>
+              <label style={labelStyle}>Framework</label>
+              <select
+                value={config.framework}
+                onChange={(e) => setConfig({ ...config, framework: e.target.value })}
+                style={inputStyle}
+              >
+                {frameworks[config.language].map(fw => (
+                  <option key={fw} value={fw}>{fw}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Target URL */}
+            <div style={{ marginBottom: '24px' }}>
+              <label style={labelStyle}>Target URL</label>
+              <select
+                value=""
+                onChange={(e) => { if (e.target.value) setConfig({ ...config, targetUrl: e.target.value }); }}
+                style={{ ...inputStyle, color: '#9ca3af', marginBottom: '8px' }}
+              >
+                <option value="">📋 Choose an example site...</option>
+                <optgroup label="Recommended Test Sites">
+                  <option value="https://www.saucedemo.com">🛒 Sauce Demo (E-commerce)</option>
+                  <option value="https://the-internet.herokuapp.com">🧪 The Internet</option>
+                  <option value="https://automationexercise.com">🏋️ Automation Exercise</option>
+                  <option value="https://demoqa.com">📚 DemoQA</option>
+                  <option value="https://practice.expandtesting.com">🎯 Expand Testing Practice</option>
+                </optgroup>
+                <optgroup label="Real Sites (May Have Bot Protection)">
+                  <option value="https://www.wikipedia.org">📖 Wikipedia</option>
+                  <option value="https://news.ycombinator.com">🔶 Hacker News</option>
+                  <option value="https://www.github.com">🐙 GitHub</option>
+                </optgroup>
+              </select>
               <input
-                type="range"
-                min="0"
-                max="2000"
-                step="100"
-                value={config.slowMo}
-                onChange={(e) => setConfig({ ...config, slowMo: parseInt(e.target.value, 10) })}
-                style={{ width: '100%', accentColor: '#6366f1' }}
+                type="url"
+                value={config.targetUrl}
+                onChange={(e) => setConfig({ ...config, targetUrl: e.target.value })}
+                placeholder="https://example.com"
+                style={inputStyle}
               />
-              <div style={{ fontSize: '0.7rem', color: '#6b7280', marginTop: '4px' }}>
-                Delay between each Playwright action — helps watch tests run
+              <div style={{ fontSize: '0.7rem', color: '#4b5563', marginTop: '5px' }}>
+                Select an example or enter your own URL
               </div>
             </div>
-          )}
 
-          {/* Run Tests Button */}
-          {generatedFiles && (
+            {/* Generate Button */}
             <button
-              onClick={runTests}
-              disabled={isRunningTests}
+              onClick={generateFramework}
+              disabled={isGenerating}
               style={{
                 width: '100%',
-                marginTop: '12px',
-                padding: '12px',
-                background: isRunningTests
-                  ? 'rgba(34, 197, 94, 0.3)'
-                  : 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)',
+                padding: '13px',
+                background: isGenerating ? 'rgba(99, 102, 241, 0.3)' : 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
                 border: 'none',
-                borderRadius: '8px',
+                borderRadius: '9px',
                 color: '#fff',
                 fontSize: '0.95rem',
                 fontWeight: '600',
-                cursor: isRunningTests ? 'not-allowed' : 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '8px'
-              }}
-            >
-              {isRunningTests ? (
-                <>
-                  <span style={{ display: 'inline-block', animation: 'spin 1s linear infinite' }}>🔄</span>
-                  Running Tests...
-                </>
-              ) : (
-                <>
-                  <span>▶️</span>
-                  Run Tests
-                </>
-              )}
-            </button>
-          )}
-
-          {/* Download ZIP Button */}
-          {generatedFiles && (
-            <button
-              onClick={downloadAsZip}
-              style={{
-                width: '100%',
-                marginTop: '8px',
-                padding: '10px',
-                background: 'transparent',
-                border: '1px solid rgba(99, 102, 241, 0.4)',
-                borderRadius: '8px',
-                color: '#a5b4fc',
-                fontSize: '0.85rem',
-                fontWeight: '500',
-                cursor: 'pointer',
+                cursor: isGenerating ? 'not-allowed' : 'pointer',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 gap: '8px',
-                transition: 'all 0.2s ease'
-              }}
-              onMouseOver={(e) => {
-                e.currentTarget.style.background = 'rgba(99, 102, 241, 0.1)';
-                e.currentTarget.style.borderColor = 'rgba(99, 102, 241, 0.6)';
-              }}
-              onMouseOut={(e) => {
-                e.currentTarget.style.background = 'transparent';
-                e.currentTarget.style.borderColor = 'rgba(99, 102, 241, 0.4)';
+                fontFamily: 'inherit',
               }}
             >
-              <span>📦</span>
-              Download ZIP
+              {isGenerating
+                ? <><span style={{ display: 'inline-block', animation: 'spin 1s linear infinite' }}>⚙️</span> Generating...</>
+                : <><span>🚀</span> Generate Framework</>}
             </button>
-          )}
 
-          {/* Analysis Log */}
-          {analysisLog.length > 0 && (
-            <div style={{
-              marginTop: '20px',
-              padding: '12px',
-              background: 'rgba(0, 0, 0, 0.3)',
-              borderRadius: '8px',
-              fontSize: '0.7rem',
-              maxHeight: '120px',
-              overflowY: 'auto'
-            }}>
-              {analysisLog.map((log, i) => (
-                <div key={i} style={{
-                  color: log.message.startsWith('✓') ? '#4ade80' :
-                         log.message.startsWith('✗') ? '#f87171' : '#9ca3af',
-                  marginBottom: '4px'
-                }}>
-                  <span style={{ color: '#6b7280' }}>[{log.time}]</span> {log.message}
-                </div>
-              ))}
+            {/* Analysis Log */}
+            {analysisLog.length > 0 && (
+              <div style={{ marginTop: '20px', padding: '12px', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', fontSize: '0.7rem', maxHeight: '130px', overflowY: 'auto' }}>
+                {analysisLog.map((log, i) => (
+                  <div key={i} style={{ color: log.message.startsWith('✓') ? '#4ade80' : log.message.startsWith('✗') ? '#f87171' : '#9ca3af', marginBottom: '4px' }}>
+                    <span style={{ color: '#4b5563' }}>[{log.time}]</span> {log.message}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Error */}
+            {error && (
+              <div style={{ marginTop: '16px', padding: '12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '8px', color: '#f87171', fontSize: '0.8rem' }}>
+                {error}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────────────────────────────
+          TAB 2: FILE EXPLORER
+      ───────────────────────────────────────── */}
+      {activeTab === 'explorer' && (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '20px 24px' }}>
+          {!generatedFiles ? (
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#4b5563', flexDirection: 'column', gap: '12px' }}>
+              <div style={{ fontSize: '3rem', opacity: 0.4 }}>📁</div>
+              <p>Generate a framework first to explore files</p>
             </div>
-          )}
+          ) : (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'rgba(30,30,45,0.8)', borderRadius: '12px', border: '1px solid rgba(99,102,241,0.2)', overflow: 'hidden' }}>
+              {/* IDE Toolbar */}
+              <div style={{ padding: '8px 14px', background: 'rgba(15,15,25,0.8)', borderBottom: '1px solid rgba(99,102,241,0.2)', display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: '#ff5f56' }} />
+                  <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: '#ffbd2e' }} />
+                  <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: '#27ca3f' }} />
+                </div>
+                <span style={{ fontSize: '0.78rem', color: '#6b7280', marginLeft: '10px' }}>qa-framework</span>
+                <span style={{ fontSize: '0.7rem', color: '#374151', marginLeft: 'auto' }}>{generatedFiles.files.length} files</span>
+                <button
+                  onClick={downloadAsZip}
+                  style={{ padding: '5px 12px', background: 'transparent', border: '1px solid rgba(99,102,241,0.4)', borderRadius: '6px', color: '#a5b4fc', fontSize: '0.75rem', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: '6px' }}
+                  onMouseOver={e => e.currentTarget.style.background = 'rgba(99,102,241,0.1)'}
+                  onMouseOut={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  📦 Download ZIP
+                </button>
+              </div>
 
-          {error && (
-            <div style={{
-              marginTop: '16px',
-              padding: '12px',
-              background: 'rgba(239, 68, 68, 0.1)',
-              border: '1px solid rgba(239, 68, 68, 0.3)',
-              borderRadius: '8px',
-              color: '#f87171',
-              fontSize: '0.8rem'
-            }}>
-              {error}
+              {/* IDE Body */}
+              <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+                {/* Sidebar */}
+                <div style={{ width: '200px', background: 'rgba(15,15,25,0.5)', borderRight: '1px solid rgba(99,102,241,0.2)', overflow: 'auto', flexShrink: 0 }}>
+                  <div style={{ padding: '10px 12px', fontSize: '0.68rem', fontWeight: '600', color: '#4b5563', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid rgba(99,102,241,0.1)' }}>Explorer</div>
+                  <div style={{ padding: '8px 0' }}>
+                    {(() => {
+                      const folders = {};
+                      const rootFiles = [];
+                      generatedFiles.files.forEach(file => {
+                        const path = file.path?.replace(/^\/+|\/+$/g, '') || '';
+                        if (path) { if (!folders[path]) folders[path] = []; folders[path].push(file); }
+                        else rootFiles.push(file);
+                      });
+                      return (
+                        <>
+                          {rootFiles.map(file => (
+                            <div key={file.name} onClick={() => setActiveFile(file.name)} style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', background: activeFile === file.name ? 'rgba(99,102,241,0.2)' : 'transparent', borderLeft: activeFile === file.name ? '2px solid #6366f1' : '2px solid transparent', transition: 'all 0.15s' }}>
+                              <span style={{ fontSize: '0.9rem' }}>{getFileIcon(file.name)}</span>
+                              <span style={{ fontSize: '0.73rem', color: activeFile === file.name ? '#e0e0e0' : '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
+                            </div>
+                          ))}
+                          {Object.entries(folders).map(([folderName, files]) => (
+                            <div key={folderName}>
+                              <div style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '6px', color: '#a5b4fc', fontSize: '0.73rem', fontWeight: '500', marginTop: '4px' }}>
+                                <span style={{ fontSize: '0.65rem' }}>▼</span><span style={{ fontSize: '0.85rem' }}>📂</span>{folderName}
+                              </div>
+                              {files.map(file => (
+                                <div key={file.name} onClick={() => setActiveFile(file.name)} style={{ padding: '5px 12px 5px 30px', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', background: activeFile === file.name ? 'rgba(99,102,241,0.2)' : 'transparent', borderLeft: activeFile === file.name ? '2px solid #6366f1' : '2px solid transparent', transition: 'all 0.15s' }}>
+                                  <span style={{ fontSize: '0.82rem' }}>{getFileIcon(file.name)}</span>
+                                  <span style={{ fontSize: '0.71rem', color: activeFile === file.name ? '#e0e0e0' : '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
+                                </div>
+                              ))}
+                            </div>
+                          ))}
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                {/* Code Area */}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                  {/* Active file tab */}
+                  <div style={{ display: 'flex', background: 'rgba(15,15,25,0.3)', borderBottom: '1px solid rgba(99,102,241,0.2)', minHeight: '34px' }}>
+                    {activeFile && (
+                      <div style={{ padding: '7px 16px', background: 'rgba(30,30,45,0.8)', borderRight: '1px solid rgba(99,102,241,0.2)', color: '#e0e0e0', fontSize: '0.73rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        {getFileIcon(activeFile)} {activeFile}
+                      </div>
+                    )}
+                  </div>
+                  {/* Code + line numbers */}
+                  <div style={{ flex: 1, overflow: 'auto', display: 'flex' }}>
+                    {generatedFiles.files.find(f => f.name === activeFile) && (() => {
+                      const content = generatedFiles.files.find(f => f.name === activeFile)?.content || '';
+                      const lines = content.split('\n');
+                      return (
+                        <>
+                          <div style={{ padding: '12px 0', background: 'rgba(15,15,25,0.3)', borderRight: '1px solid rgba(99,102,241,0.1)', textAlign: 'right', userSelect: 'none', flexShrink: 0 }}>
+                            {lines.map((_, i) => (<div key={i} style={{ padding: '0 12px', fontSize: '0.68rem', lineHeight: '1.6', color: '#374151', fontFamily: 'monospace' }}>{i + 1}</div>))}
+                          </div>
+                          <pre style={{ margin: 0, padding: '12px 16px', fontSize: '0.73rem', lineHeight: '1.6', color: '#c9d1d9', flex: 1, overflow: 'auto' }}>
+                            <code>{content}</code>
+                          </pre>
+                        </>
+                      );
+                    })()}
+                  </div>
+                  {/* Status bar */}
+                  <div style={{ padding: '4px 12px', background: 'rgba(99,102,241,0.12)', borderTop: '1px solid rgba(99,102,241,0.2)', display: 'flex', alignItems: 'center', gap: '16px', fontSize: '0.63rem', color: '#6b7280', flexShrink: 0 }}>
+                    <span>{activeFile?.endsWith('.py') ? 'Python' : activeFile?.endsWith('.ts') ? 'TypeScript' : activeFile?.endsWith('.js') ? 'JavaScript' : activeFile?.endsWith('.java') ? 'Java' : activeFile?.endsWith('.cs') ? 'C#' : activeFile?.endsWith('.md') ? 'Markdown' : 'Text'}</span>
+                    <span>UTF-8</span>
+                    <span style={{ marginLeft: 'auto' }}>{generatedFiles.files.find(f => f.name === activeFile)?.content.split('\n').length || 0} lines</span>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </div>
+      )}
 
-        {/* Code Panel - IDE Style */}
-        {generatedFiles && (
-          <div style={{
-            background: 'rgba(30, 30, 45, 0.8)',
-            borderRadius: '12px',
-            border: '1px solid rgba(99, 102, 241, 0.2)',
-            backdropFilter: 'blur(10px)',
-            overflow: 'hidden',
-            display: 'flex',
-            flexDirection: 'column'
-          }}>
-            {/* IDE Header Bar */}
-            <div style={{
-              padding: '8px 12px',
-              background: 'rgba(15, 15, 25, 0.8)',
-              borderBottom: '1px solid rgba(99, 102, 241, 0.2)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}>
-              {/* Window Controls */}
-              <div style={{ display: 'flex', gap: '6px' }}>
-                <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: '#ff5f56' }} />
-                <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: '#ffbd2e' }} />
-                <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: '#27ca3f' }} />
-              </div>
-              <span style={{ 
-                fontSize: '0.8rem', 
-                color: '#6b7280',
-                marginLeft: '12px'
-              }}>
-                qa-framework
-              </span>
-              <span style={{ 
-                fontSize: '0.7rem', 
-                color: '#4b5563',
-                marginLeft: 'auto'
-              }}>
-                {generatedFiles.files.length} files
-              </span>
+      {/* ─────────────────────────────────────────
+          TAB 3: TEST RUN & REPORT
+      ───────────────────────────────────────── */}
+      {activeTab === 'testrun' && (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '20px 24px', gap: '16px' }}>
+          {!generatedFiles ? (
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#4b5563', flexDirection: 'column', gap: '12px' }}>
+              <div style={{ fontSize: '3rem', opacity: 0.4 }}>🧪</div>
+              <p>Generate a framework first to run tests</p>
             </div>
+          ) : (
+            <>
+              {/* Controls bar */}
+              <div style={{ background: 'rgba(30,30,45,0.8)', borderRadius: '12px', border: '1px solid rgba(99,102,241,0.2)', padding: '16px 20px', display: 'flex', alignItems: 'center', gap: '20px', flexWrap: 'wrap', flexShrink: 0 }}>
 
-            {/* IDE Body */}
-            <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-              {/* File Explorer Sidebar */}
-              <div style={{
-                width: '180px',
-                background: 'rgba(15, 15, 25, 0.5)',
-                borderRight: '1px solid rgba(99, 102, 241, 0.2)',
-                overflow: 'auto',
-                flexShrink: 0
-              }}>
-                {/* Explorer Header */}
-                <div style={{
-                  padding: '10px 12px',
-                  fontSize: '0.7rem',
-                  fontWeight: '600',
-                  color: '#6b7280',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.05em',
-                  borderBottom: '1px solid rgba(99, 102, 241, 0.1)'
-                }}>
-                  Explorer
+                {/* Browser */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '160px' }}>
+                  <label style={{ ...labelStyle, marginBottom: '2px' }}>Browser</label>
+                  <select value={config.browser} onChange={(e) => setConfig({ ...config, browser: e.target.value })} style={{ ...inputStyle, padding: '8px 10px', fontSize: '0.82rem' }}>
+                    <option value="chromium">🌐 Chromium</option>
+                    <option value="firefox">🦊 Firefox</option>
+                    <option value="webkit">🧭 WebKit (Safari)</option>
+                  </select>
                 </div>
 
-                {/* File Tree */}
-                <div style={{ padding: '8px 0' }}>
-                  {/* Group files by folder */}
-                  {(() => {
-                    const folders = {};
-                    const rootFiles = [];
-                    
-                    generatedFiles.files.forEach(file => {
-                      const path = file.path?.replace(/^\/+|\/+$/g, '') || '';
-                      if (path) {
-                        if (!folders[path]) folders[path] = [];
-                        folders[path].push(file);
-                      } else {
-                        rootFiles.push(file);
-                      }
-                    });
-
-                    return (
-                      <>
-                        {/* Root files */}
-                        {rootFiles.map(file => (
-                          <div
-                            key={file.name}
-                            onClick={() => setActiveFile(file.name)}
-                            style={{
-                              padding: '6px 12px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '8px',
-                              cursor: 'pointer',
-                              background: activeFile === file.name ? 'rgba(99, 102, 241, 0.2)' : 'transparent',
-                              borderLeft: activeFile === file.name ? '2px solid #6366f1' : '2px solid transparent',
-                              transition: 'all 0.15s ease'
-                            }}
-                          >
-                            <span style={{ fontSize: '0.9rem' }}>{getFileIcon(file.name)}</span>
-                            <span style={{
-                              fontSize: '0.75rem',
-                              color: activeFile === file.name ? '#e0e0e0' : '#9ca3af',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap'
-                            }}>
-                              {file.name}
-                            </span>
-                          </div>
-                        ))}
-
-                        {/* Folders */}
-                        {Object.entries(folders).map(([folderName, files]) => (
-                          <div key={folderName}>
-                            {/* Folder Header */}
-                            <div style={{
-                              padding: '6px 12px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '6px',
-                              color: '#a5b4fc',
-                              fontSize: '0.75rem',
-                              fontWeight: '500',
-                              marginTop: '4px'
-                            }}>
-                              <span style={{ fontSize: '0.7rem' }}>▼</span>
-                              <span style={{ fontSize: '0.85rem' }}>📂</span>
-                              {folderName}
-                            </div>
-                            {/* Folder Files */}
-                            {files.map(file => (
-                              <div
-                                key={file.name}
-                                onClick={() => setActiveFile(file.name)}
-                                style={{
-                                  padding: '5px 12px 5px 32px',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: '8px',
-                                  cursor: 'pointer',
-                                  background: activeFile === file.name ? 'rgba(99, 102, 241, 0.2)' : 'transparent',
-                                  borderLeft: activeFile === file.name ? '2px solid #6366f1' : '2px solid transparent',
-                                  transition: 'all 0.15s ease'
-                                }}
-                              >
-                                <span style={{ fontSize: '0.85rem' }}>{getFileIcon(file.name)}</span>
-                                <span style={{
-                                  fontSize: '0.73rem',
-                                  color: activeFile === file.name ? '#e0e0e0' : '#9ca3af',
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                  whiteSpace: 'nowrap'
-                                }}>
-                                  {file.name}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        ))}
-                      </>
-                    );
-                  })()}
-                </div>
-              </div>
-
-              {/* Code Editor Area */}
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                {/* Tab Bar */}
-                <div style={{
-                  display: 'flex',
-                  background: 'rgba(15, 15, 25, 0.3)',
-                  borderBottom: '1px solid rgba(99, 102, 241, 0.2)',
-                  minHeight: '35px'
-                }}>
-                  {activeFile && (
-                    <div style={{
-                      padding: '8px 16px',
-                      background: 'rgba(30, 30, 45, 0.8)',
-                      borderRight: '1px solid rgba(99, 102, 241, 0.2)',
-                      color: '#e0e0e0',
-                      fontSize: '0.75rem',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px'
-                    }}>
-                      {getFileIcon(activeFile)} {activeFile}
-                      <span style={{ 
-                        color: '#6b7280', 
-                        marginLeft: '8px',
-                        cursor: 'pointer',
-                        fontSize: '0.9rem',
-                        lineHeight: 1
-                      }}>×</span>
+                {/* Headed toggle */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label style={{ ...labelStyle, marginBottom: '2px' }}>Mode</label>
+                  <div
+                    onClick={() => setConfig({ ...config, headed: !config.headed, slowMo: !config.headed ? config.slowMo : 0 })}
+                    style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '8px 12px', background: 'rgba(15,15,25,0.5)', borderRadius: '8px', border: '1px solid rgba(99,102,241,0.2)', userSelect: 'none' }}
+                  >
+                    <div style={{ width: '36px', height: '20px', background: config.headed ? 'linear-gradient(135deg,#22c55e,#16a34a)' : 'rgba(75,85,99,0.5)', borderRadius: '10px', position: 'relative', transition: 'background 0.2s', flexShrink: 0 }}>
+                      <div style={{ width: '16px', height: '16px', background: '#fff', borderRadius: '50%', position: 'absolute', top: '2px', left: config.headed ? '18px' : '2px', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
                     </div>
-                  )}
+                    <span style={{ fontSize: '0.82rem', color: '#e0e0e0', whiteSpace: 'nowrap' }}>{config.headed ? '👁️ Headed' : '👻 Headless'}</span>
+                  </div>
                 </div>
 
-                {/* Code Content with Line Numbers */}
-                <div style={{ flex: 1, overflow: 'auto', display: 'flex' }}>
-                  {generatedFiles.files.find(f => f.name === activeFile) && (() => {
-                    const content = generatedFiles.files.find(f => f.name === activeFile)?.content || '';
-                    const lines = content.split('\n');
-                    return (
-                      <>
-                        {/* Line Numbers */}
-                        <div style={{
-                          padding: '12px 0',
-                          background: 'rgba(15, 15, 25, 0.3)',
-                          borderRight: '1px solid rgba(99, 102, 241, 0.1)',
-                          textAlign: 'right',
-                          userSelect: 'none',
-                          flexShrink: 0
-                        }}>
-                          {lines.map((_, i) => (
-                            <div key={i} style={{
-                              padding: '0 12px',
-                              fontSize: '0.7rem',
-                              lineHeight: '1.6',
-                              color: '#4b5563',
-                              fontFamily: 'monospace'
-                            }}>
-                              {i + 1}
-                            </div>
-                          ))}
-                        </div>
-                        {/* Code */}
-                        <pre style={{
-                          margin: 0,
-                          padding: '12px 16px',
-                          fontSize: '0.75rem',
-                          lineHeight: '1.6',
-                          color: '#c9d1d9',
-                          flex: 1,
-                          overflow: 'auto'
-                        }}>
-                          <code>{content}</code>
-                        </pre>
-                      </>
-                    );
-                  })()}
-                </div>
+                {/* Slow-mo (headed only) */}
+                {config.headed && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '180px' }}>
+                    <label style={{ ...labelStyle, marginBottom: '2px' }}>🐢 Slow Mo <span style={{ color: '#a5b4fc', fontFamily: 'monospace' }}>{config.slowMo}ms</span></label>
+                    <input type="range" min="0" max="2000" step="100" value={config.slowMo} onChange={(e) => setConfig({ ...config, slowMo: parseInt(e.target.value, 10) })} style={{ accentColor: '#6366f1', width: '100%' }} />
+                  </div>
+                )}
 
-                {/* Status Bar */}
-                <div style={{
-                  padding: '4px 12px',
-                  background: 'rgba(99, 102, 241, 0.15)',
-                  borderTop: '1px solid rgba(99, 102, 241, 0.2)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '16px',
-                  fontSize: '0.65rem',
-                  color: '#9ca3af'
-                }}>
-                  <span>
-                    {activeFile?.endsWith('.py') ? 'Python' : 
-                     activeFile?.endsWith('.txt') ? 'Plain Text' : 
-                     activeFile?.endsWith('.ini') ? 'INI' : 'File'}
-                  </span>
-                  <span>UTF-8</span>
-                  <span style={{ marginLeft: 'auto' }}>
-                    {generatedFiles.files.find(f => f.name === activeFile)?.content.split('\n').length || 0} lines
-                  </span>
-                </div>
+                {/* Run button */}
+                <button
+                  onClick={runTests}
+                  disabled={isRunningTests}
+                  style={{ marginLeft: 'auto', padding: '10px 24px', background: isRunningTests ? 'rgba(34,197,94,0.3)' : 'linear-gradient(135deg,#22c55e,#16a34a)', border: 'none', borderRadius: '9px', color: '#fff', fontSize: '0.9rem', fontWeight: '600', cursor: isRunningTests ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontFamily: 'inherit', whiteSpace: 'nowrap' }}
+                >
+                  {isRunningTests ? <><span style={{ display: 'inline-block', animation: 'spin 1s linear infinite' }}>🔄</span> Running...</> : <><span>▶️</span> Run Tests</>}
+                </button>
               </div>
-            </div>
-          </div>
-        )}
 
-        {/* Test Report Panel */}
-        {generatedFiles && (
-          <div style={{
-            background: 'rgba(30, 30, 45, 0.8)',
-            borderRadius: '12px',
-            border: '1px solid rgba(99, 102, 241, 0.2)',
-            backdropFilter: 'blur(10px)',
-            overflow: 'hidden',
-            display: 'flex',
-            flexDirection: 'column'
-          }}>
-            <TestReportPanel />
-          </div>
-        )}
-      </div>
+              {/* Two-pane: Terminal + Report */}
+              <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', overflow: 'hidden', minHeight: 0 }}>
+
+                {/* Terminal log */}
+                <div style={{ background: 'rgba(10,10,16,0.95)', borderRadius: '12px', border: '1px solid rgba(99,102,241,0.15)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                  <div style={{ padding: '10px 14px', borderBottom: '1px solid rgba(99,102,241,0.1)', display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                    <div style={{ display: 'flex', gap: '5px' }}>
+                      <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#ff5f56' }} />
+                      <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#ffbd2e' }} />
+                      <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#27ca3f' }} />
+                    </div>
+                    <span style={{ fontSize: '0.72rem', color: '#4b5563', marginLeft: '8px' }}>Terminal</span>
+                    {isRunningTests && <span style={{ fontSize: '0.68rem', color: '#22c55e', marginLeft: 'auto', animation: 'pulse 1s infinite' }}>● running</span>}
+                  </div>
+                  <div style={{ flex: 1, overflow: 'auto', padding: '12px 14px', fontFamily: 'monospace', fontSize: '0.75rem', lineHeight: '1.6' }}>
+                    {testOutput.length === 0 && !isRunningTests && (
+                      <div style={{ color: '#374151', fontStyle: 'italic' }}>Waiting for test run...</div>
+                    )}
+                    {testOutput.map((line, i) => (
+                      <div key={i} style={{ color: line.type === 'status' ? '#818cf8' : line.type === 'error' ? '#f87171' : line.text?.includes('PASSED') ? '#4ade80' : line.text?.includes('FAILED') || line.text?.includes('ERROR') ? '#f87171' : '#6b7280', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        {line.type === 'status' ? `► ${line.text}` : line.text}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Report */}
+                <div style={{ background: 'rgba(30,30,45,0.8)', borderRadius: '12px', border: '1px solid rgba(99,102,241,0.2)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                  <TestReportPanel />
+                </div>
+
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      </div>{/* end tab content */}
+
 
       <style>{`
         @keyframes spin {
