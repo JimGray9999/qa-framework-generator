@@ -20,9 +20,25 @@ const QAFrameworkGenerator = () => {
   const [settings, setSettings] = useState(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
   const [providerStatus, setProviderStatus] = useState(null);
+  const [sessionToken, setSessionToken] = useState(null);
+
+  const API_BASE = 'http://localhost:3001';
+  const apiFetch = (path, opts = {}) => {
+    const headers = { ...(opts.headers || {}) };
+    if (sessionToken) headers['Authorization'] = `Bearer ${sessionToken}`;
+    return fetch(`${API_BASE}${path}`, { ...opts, headers });
+  };
 
   useEffect(() => {
-    fetch('http://localhost:3001/api/providers')
+    // Fetch the per-process auth token, then load providers.
+    fetch(`${API_BASE}/api/session`)
+      .then(r => r.json())
+      .then(d => {
+        setSessionToken(d.token);
+        return fetch(`${API_BASE}/api/providers`, {
+          headers: { Authorization: `Bearer ${d.token}` }
+        });
+      })
       .then(r => r.json())
       .then(d => setProviderStatus(d.providers))
       .catch(() => {});
@@ -71,7 +87,7 @@ const QAFrameworkGenerator = () => {
     try {
       addLog('Analyzing target site structure...');
       
-      const response = await fetch("http://localhost:3001/api/generate", {
+      const response = await apiFetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -143,7 +159,7 @@ const QAFrameworkGenerator = () => {
     setTestReport(null);
 
     try {
-      const response = await fetch("http://localhost:3001/api/run-tests", {
+      const response = await apiFetch("/api/run-tests", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
@@ -206,7 +222,7 @@ const QAFrameworkGenerator = () => {
     if (!generatedFiles) return;
     
     try {
-      const response = await fetch("http://localhost:3001/api/download-zip", {
+      const response = await apiFetch("/api/download-zip", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ files: generatedFiles.files })
