@@ -42,14 +42,13 @@ async function callAnthropicAPI({ apiKey, userPrompt }) {
   return message.content[0].text;
 }
 
-async function callOpenAI({ apiKey, userPrompt, model = "gpt-4o" }) {
-  const key = apiKey || process.env.OPENAI_API_KEY;
-  if (!key) throw new Error("No OpenAI API key provided. Enter one in Settings or choose a different provider.");
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+async function callOpenAICompatible({ apiKey, userPrompt, model, url, providerLabel }) {
+  if (!apiKey) throw new Error(`No ${providerLabel} API key provided. Enter one in Settings or choose a different provider.`);
+  const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${key}`
+      "Authorization": `Bearer ${apiKey}`
     },
     body: JSON.stringify({
       model,
@@ -62,10 +61,37 @@ async function callOpenAI({ apiKey, userPrompt, model = "gpt-4o" }) {
   });
   if (!response.ok) {
     const err = await response.text();
-    throw new Error(`OpenAI API error ${response.status}: ${err}`);
+    throw new Error(`${providerLabel} API error ${response.status}: ${err}`);
   }
   const data = await response.json();
   return data.choices?.[0]?.message?.content || "";
+}
+
+async function callOpenAI({ apiKey, userPrompt, model = "gpt-4o" }) {
+  return callOpenAICompatible({
+    apiKey: apiKey || process.env.OPENAI_API_KEY,
+    userPrompt, model,
+    url: "https://api.openai.com/v1/chat/completions",
+    providerLabel: "OpenAI"
+  });
+}
+
+async function callGrok({ apiKey, userPrompt, model = "grok-2-latest" }) {
+  return callOpenAICompatible({
+    apiKey: apiKey || process.env.XAI_API_KEY || process.env.GROK_API_KEY,
+    userPrompt, model,
+    url: "https://api.x.ai/v1/chat/completions",
+    providerLabel: "Grok (xAI)"
+  });
+}
+
+async function callPerplexity({ apiKey, userPrompt, model = "sonar-pro" }) {
+  return callOpenAICompatible({
+    apiKey: apiKey || process.env.PERPLEXITY_API_KEY,
+    userPrompt, model,
+    url: "https://api.perplexity.ai/chat/completions",
+    providerLabel: "Perplexity"
+  });
 }
 
 // Calls the locally installed Claude Code CLI (`claude -p`) which uses the user's
@@ -113,6 +139,10 @@ export async function generateWithProvider({ provider, apiKey, userPrompt, model
       return await callClaudeLocal({ userPrompt });
     case "openai":
       return await callOpenAI({ apiKey, userPrompt, model });
+    case "grok":
+      return await callGrok({ apiKey, userPrompt, model });
+    case "perplexity":
+      return await callPerplexity({ apiKey, userPrompt, model });
     case "anthropic-api":
     default:
       return await callAnthropicAPI({ apiKey, userPrompt });
@@ -129,6 +159,8 @@ export async function detectProviders() {
   return {
     "claude-local": { available: claudeLocal, requiresKey: false, label: "Claude (Local CLI)" },
     "anthropic-api": { available: true, requiresKey: true, hasEnvKey: !!process.env.ANTHROPIC_API_KEY, label: "Anthropic API (Claude)" },
-    "openai": { available: true, requiresKey: true, hasEnvKey: !!process.env.OPENAI_API_KEY, label: "OpenAI (ChatGPT)" }
+    "openai": { available: true, requiresKey: true, hasEnvKey: !!process.env.OPENAI_API_KEY, label: "OpenAI (ChatGPT)" },
+    "grok": { available: true, requiresKey: true, hasEnvKey: !!(process.env.XAI_API_KEY || process.env.GROK_API_KEY), label: "Grok (xAI)" },
+    "perplexity": { available: true, requiresKey: true, hasEnvKey: !!process.env.PERPLEXITY_API_KEY, label: "Perplexity" }
   };
 }
