@@ -14,7 +14,8 @@ const QAFrameworkGenerator = () => {
     framework: 'playwright',
     targetUrl: 'https://www.saucedemo.com',
     browser: 'chromium',
-    headed: false
+    headed: false,
+    slowMo: 0
   });
   const [settings, setSettings] = useState(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
@@ -148,7 +149,8 @@ const QAFrameworkGenerator = () => {
         body: JSON.stringify({ 
           files: generatedFiles.files,
           browser: config.browser,
-          headed: config.headed
+          headed: config.headed,
+          slowMo: config.headed ? config.slowMo : 0
         })
       });
 
@@ -282,21 +284,37 @@ const QAFrameworkGenerator = () => {
               <span style={{ fontSize: '1.5rem' }}>📊</span>
               Test Report
             </h2>
-            {testStatus && (
-              <div style={{
-                padding: '8px 16px',
-                borderRadius: '20px',
-                background: testStatus === 'passed' 
-                  ? 'linear-gradient(135deg, rgba(34, 197, 94, 0.3) 0%, rgba(22, 163, 74, 0.3) 100%)'
-                  : 'linear-gradient(135deg, rgba(239, 68, 68, 0.3) 0%, rgba(220, 38, 38, 0.3) 100%)',
-                color: testStatus === 'passed' ? '#4ade80' : '#f87171',
-                fontWeight: '600',
-                fontSize: '0.85rem',
-                border: `1px solid ${testStatus === 'passed' ? 'rgba(34, 197, 94, 0.5)' : 'rgba(239, 68, 68, 0.5)'}`
-              }}>
-                {testStatus === 'passed' ? '✓ ALL TESTS PASSED' : '✗ TESTS FAILED'}
-              </div>
-            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              {testReport?.browser && (
+                <div style={{
+                  padding: '8px 14px',
+                  borderRadius: '20px',
+                  background: 'rgba(99, 102, 241, 0.15)',
+                  color: '#a5b4fc',
+                  fontWeight: '600',
+                  fontSize: '0.8rem',
+                  border: '1px solid rgba(99, 102, 241, 0.4)',
+                  textTransform: 'capitalize'
+                }}>
+                  {({ chromium: '🌐', firefox: '🦊', webkit: '🧭' }[testReport.browser] || '🌐')} {testReport.browser}{testReport.headed ? ' · headed' : ''}
+                </div>
+              )}
+              {testStatus && (
+                <div style={{
+                  padding: '8px 16px',
+                  borderRadius: '20px',
+                  background: testStatus === 'passed'
+                    ? 'linear-gradient(135deg, rgba(34, 197, 94, 0.3) 0%, rgba(22, 163, 74, 0.3) 100%)'
+                    : 'linear-gradient(135deg, rgba(239, 68, 68, 0.3) 0%, rgba(220, 38, 38, 0.3) 100%)',
+                  color: testStatus === 'passed' ? '#4ade80' : '#f87171',
+                  fontWeight: '600',
+                  fontSize: '0.85rem',
+                  border: `1px solid ${testStatus === 'passed' ? 'rgba(34, 197, 94, 0.5)' : 'rgba(239, 68, 68, 0.5)'}`
+                }}>
+                  {testStatus === 'passed' ? '✓ ALL TESTS PASSED' : '✗ TESTS FAILED'}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Summary Cards */}
@@ -645,10 +663,10 @@ const QAFrameworkGenerator = () => {
           WebkitTextFillColor: 'transparent',
           marginBottom: '8px'
         }}>
-          QA Framework Generator
+          QA Automation Framework Generator
         </h1>
         <p style={{ color: '#6b7280', fontSize: '0.9rem' }}>
-          Point. Click. Test. Ship.
+          Select your framework and language, and test
         </p>
       </div>
 
@@ -827,6 +845,65 @@ const QAFrameworkGenerator = () => {
             </div>
           </div>
 
+          {/* Generate Button */}
+          <button
+            onClick={generateFramework}
+            disabled={isGenerating}
+            style={{
+              width: '100%',
+              marginBottom: '16px',
+              padding: '12px',
+              background: isGenerating
+                ? 'rgba(99, 102, 241, 0.3)'
+                : 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
+              border: 'none',
+              borderRadius: '8px',
+              color: '#fff',
+              fontSize: '0.95rem',
+              fontWeight: '600',
+              cursor: isGenerating ? 'not-allowed' : 'pointer',
+              transition: 'all 0.2s ease',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px'
+            }}
+          >
+            {isGenerating ? (
+              <>
+                <span style={{ display: 'inline-block', animation: 'spin 1s linear infinite' }}>⚙️</span>
+                Generating...
+              </>
+            ) : (
+              <>
+                <span>🚀</span>
+                Generate Framework
+              </>
+            )}
+          </button>
+
+          {/* Test Run Section Header */}
+          <div style={{
+            marginTop: '8px',
+            marginBottom: '14px',
+            paddingTop: '14px',
+            borderTop: '1px solid rgba(99, 102, 241, 0.2)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}>
+            <span style={{ fontSize: '1rem' }}>🧪</span>
+            <span style={{
+              fontSize: '0.85rem',
+              fontWeight: 600,
+              color: '#a5b4fc',
+              textTransform: 'uppercase',
+              letterSpacing: '0.06em'
+            }}>
+              Test Run
+            </span>
+          </div>
+
           {/* Browser Select */}
           <div style={{ marginBottom: '16px' }}>
             <label style={{
@@ -920,41 +997,42 @@ const QAFrameworkGenerator = () => {
             </label>
           </div>
 
-          {/* Generate Button */}
-          <button
-            onClick={generateFramework}
-            disabled={isGenerating}
-            style={{
-              width: '100%',
+          {/* Slow Mo Slider (only when headed) */}
+          {config.headed && (
+            <div style={{
+              marginBottom: '20px',
               padding: '12px',
-              background: isGenerating 
-                ? 'rgba(99, 102, 241, 0.3)'
-                : 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
-              border: 'none',
+              background: 'rgba(15, 15, 25, 0.5)',
               borderRadius: '8px',
-              color: '#fff',
-              fontSize: '0.95rem',
-              fontWeight: '600',
-              cursor: isGenerating ? 'not-allowed' : 'pointer',
-              transition: 'all 0.2s ease',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '8px'
-            }}
-          >
-            {isGenerating ? (
-              <>
-                <span style={{ display: 'inline-block', animation: 'spin 1s linear infinite' }}>⚙️</span>
-                Generating...
-              </>
-            ) : (
-              <>
-                <span>🚀</span>
-                Generate Framework
-              </>
-            )}
-          </button>
+              border: '1px solid rgba(99, 102, 241, 0.2)'
+            }}>
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '8px'
+              }}>
+                <span style={{ fontSize: '0.85rem', color: '#e0e0e0', fontWeight: 500 }}>
+                  🐢 Slow Mo
+                </span>
+                <span style={{ fontSize: '0.8rem', color: '#a5b4fc', fontFamily: 'monospace' }}>
+                  {config.slowMo}ms
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="2000"
+                step="100"
+                value={config.slowMo}
+                onChange={(e) => setConfig({ ...config, slowMo: parseInt(e.target.value, 10) })}
+                style={{ width: '100%', accentColor: '#6366f1' }}
+              />
+              <div style={{ fontSize: '0.7rem', color: '#6b7280', marginTop: '4px' }}>
+                Delay between each Playwright action — helps watch tests run
+              </div>
+            </div>
+          )}
 
           {/* Run Tests Button */}
           {generatedFiles && (
@@ -1388,10 +1466,13 @@ const QAFrameworkGenerator = () => {
 
 const SettingsModal = ({ settings, providerStatus, onSave, onClose }) => {
   const [draft, setDraft] = useState(settings);
+  const [saveError, setSaveError] = useState('');
   const providers = [
     { id: 'claude-local', label: 'Claude (Local CLI) — uses your installed Claude Code, no key needed' },
     { id: 'anthropic-api', label: 'Anthropic API (Claude)' },
-    { id: 'openai', label: 'OpenAI (ChatGPT)' }
+    { id: 'openai', label: 'OpenAI (ChatGPT)' },
+    { id: 'grok', label: 'Grok (xAI)' },
+    { id: 'perplexity', label: 'Perplexity' }
   ];
   const current = providerStatus?.[draft.provider];
   const requiresKey = current?.requiresKey;
@@ -1414,8 +1495,8 @@ const SettingsModal = ({ settings, providerStatus, onSave, onClose }) => {
           color: '#e0e0e0', fontFamily: 'inherit'
         }}
       >
-        <h2 style={{ marginTop: 0, color: '#a5b4fc', fontSize: '1.1rem' }}>⚙ Settings</h2>
-        <p style={{ color: '#9ca3af', fontSize: '0.8rem', marginTop: '-8px' }}>
+        <h2 style={{ margin: '0 0 10px 0', color: '#a5b4fc', fontSize: '1.1rem' }}>⚙ Settings</h2>
+        <p style={{ color: '#9ca3af', fontSize: '0.8rem', margin: '0 0 8px 0', lineHeight: 1.5 }}>
           Choose which AI generates your test framework. API keys are stored locally in your browser only.
         </p>
 
@@ -1444,30 +1525,74 @@ const SettingsModal = ({ settings, providerStatus, onSave, onClose }) => {
         </select>
 
         {draft.provider === 'claude-local' && (
-          <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(99,102,241,0.08)', borderRadius: '8px', fontSize: '0.8rem', color: '#c7d2fe' }}>
-            {available
-              ? '✓ Local Claude CLI detected. No API key required — uses your existing Claude Code session.'
-              : '✗ Local Claude CLI not detected on server. Install from https://claude.com/claude-code.'}
+          <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(99,102,241,0.08)', borderRadius: '8px', fontSize: '0.8rem', color: '#c7d2fe', lineHeight: 1.5 }}>
+            {available ? (
+              <>
+                ✓ Local Claude CLI detected. No API key required — uses your existing Claude Code session.
+                <div style={{ marginTop: '6px', color: '#9ca3af' }}>
+                  Need to set it up? <a href="https://claude.com/claude-code" target="_blank" rel="noreferrer" style={{ color: '#a5b4fc' }}>Install Claude Code</a> and run <code style={{ background: 'rgba(0,0,0,0.3)', padding: '1px 4px', borderRadius: '3px' }}>claude login</code>.
+                </div>
+              </>
+            ) : (
+              <>
+                ✗ Local Claude CLI not detected on server.{' '}
+                <a href="https://claude.com/claude-code" target="_blank" rel="noreferrer" style={{ color: '#a5b4fc' }}>Install Claude Code</a>, then run <code style={{ background: 'rgba(0,0,0,0.3)', padding: '1px 4px', borderRadius: '3px' }}>claude login</code> and restart the server.
+              </>
+            )}
+          </div>
+        )}
+
+        {draft.provider === 'anthropic-api' && (
+          <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(99,102,241,0.08)', borderRadius: '8px', fontSize: '0.8rem', color: '#c7d2fe', lineHeight: 1.5 }}>
+            Need a key? Sign in to the <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer" style={{ color: '#a5b4fc' }}>Anthropic Console → API Keys</a> and create one (starts with <code style={{ background: 'rgba(0,0,0,0.3)', padding: '1px 4px', borderRadius: '3px' }}>sk-ant-</code>). Requires billing credits.
+          </div>
+        )}
+
+        {draft.provider === 'openai' && (
+          <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(99,102,241,0.08)', borderRadius: '8px', fontSize: '0.8rem', color: '#c7d2fe', lineHeight: 1.5 }}>
+            Need a key? Sign in to the <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer" style={{ color: '#a5b4fc' }}>OpenAI Platform → API Keys</a> and create a secret key (starts with <code style={{ background: 'rgba(0,0,0,0.3)', padding: '1px 4px', borderRadius: '3px' }}>sk-</code>). Requires billing credits.
+          </div>
+        )}
+
+        {draft.provider === 'grok' && (
+          <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(99,102,241,0.08)', borderRadius: '8px', fontSize: '0.8rem', color: '#c7d2fe', lineHeight: 1.5 }}>
+            Need a key? Sign in to the <a href="https://console.x.ai" target="_blank" rel="noreferrer" style={{ color: '#a5b4fc' }}>xAI Console → API Keys</a> and create a key (starts with <code style={{ background: 'rgba(0,0,0,0.3)', padding: '1px 4px', borderRadius: '3px' }}>xai-</code>). Requires billing credits.
+          </div>
+        )}
+
+        {draft.provider === 'perplexity' && (
+          <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(99,102,241,0.08)', borderRadius: '8px', fontSize: '0.8rem', color: '#c7d2fe', lineHeight: 1.5 }}>
+            Need a key? Sign in to <a href="https://www.perplexity.ai/settings/api" target="_blank" rel="noreferrer" style={{ color: '#a5b4fc' }}>Perplexity → API Settings</a> and generate a key (starts with <code style={{ background: 'rgba(0,0,0,0.3)', padding: '1px 4px', borderRadius: '3px' }}>pplx-</code>). Requires a paid plan or credits.
           </div>
         )}
 
         {requiresKey && (
           <>
             <label style={{ display: 'block', marginTop: '16px', fontSize: '0.75rem', color: '#9ca3af', textTransform: 'uppercase' }}>
-              API Key {hasEnvKey ? '(optional — server has one in env)' : '(optional)'}
+              API Key
             </label>
             <input
               type="password"
               value={draft.apiKey}
-              onChange={(e) => setDraft({ ...draft, apiKey: e.target.value })}
-              placeholder={hasEnvKey ? 'Leave blank to use server env key' : 'sk-...'}
+              onChange={(e) => { setDraft({ ...draft, apiKey: e.target.value }); if (saveError) setSaveError(''); }}
+              placeholder={({
+                'anthropic-api': 'sk-ant-...',
+                'openai': 'sk-...',
+                'grok': 'xai-...',
+                'perplexity': 'pplx-...'
+              })[draft.provider] || 'sk-...'}
               style={{
                 width: '100%', marginTop: '6px', padding: '10px',
                 background: 'rgba(15,15,25,0.8)', color: '#e0e0e0',
-                border: '1px solid rgba(99,102,241,0.3)', borderRadius: '8px',
+                border: `1px solid ${saveError ? 'rgba(239,68,68,0.6)' : 'rgba(99,102,241,0.3)'}`, borderRadius: '8px',
                 fontFamily: 'inherit', fontSize: '0.85rem', boxSizing: 'border-box'
               }}
             />
+            {saveError && (
+              <div style={{ marginTop: '8px', fontSize: '0.78rem', color: '#f87171' }}>
+                {saveError}
+              </div>
+            )}
           </>
         )}
 
@@ -1483,7 +1608,13 @@ const SettingsModal = ({ settings, providerStatus, onSave, onClose }) => {
             Cancel
           </button>
           <button
-            onClick={() => onSave(draft)}
+            onClick={() => {
+              if (requiresKey && !draft.apiKey) {
+                setSaveError('Key required, or change to Claude (Local CLI)');
+                return;
+              }
+              onSave(draft);
+            }}
             style={{
               background: 'linear-gradient(90deg, #6366f1, #a855f7)', color: 'white',
               border: 'none', padding: '8px 18px', borderRadius: '8px',

@@ -75,7 +75,8 @@ function getLanguagePrompt(language, targetUrl) {
 - Use await locator.First when multiple matches possible; prefer data-testid, aria-label, or CSS selectors
 - Browser selection: Environment.GetEnvironmentVariable("BROWSER") ?? "chromium"
 - Headed mode: Environment.GetEnvironmentVariable("HEADED") == "true"
-- In test setup: await playwright.Chromium/Firefox/Webkit.LaunchAsync(new() { Headless = !headed })`
+- SlowMo: float.TryParse(Environment.GetEnvironmentVariable("SLOWMO"), out var sm) ? sm : 0
+- In test setup: await playwright.Chromium/Firefox/Webkit.LaunchAsync(new() { Headless = !headed, SlowMo = slowMo })`
     };
   }
   if (lang === 'java') {
@@ -86,7 +87,7 @@ function getLanguagePrompt(language, targetUrl) {
    - <properties>: maven.compiler.source=17, maven.compiler.target=17, project.build.sourceEncoding=UTF-8
    - Dependencies: com.microsoft.playwright:playwright:1.48.0 (scope default), org.junit.jupiter:junit-jupiter:5.10.2 (scope test)
    - <build><plugins>: maven-compiler-plugin 3.13.0, maven-surefire-plugin 3.2.5 (surefire MUST have <configuration><useModulePath>false</useModulePath></configuration> so JUnit 5 runs).
-   - Surefire also sets systemPropertyVariables so BROWSER and HEADED env vars propagate: <configuration><environmentVariables><BROWSER>\${env.BROWSER}</BROWSER><HEADED>\${env.HEADED}</HEADED></environmentVariables></configuration>
+   - Surefire also sets systemPropertyVariables so BROWSER, HEADED, and SLOWMO env vars propagate: <configuration><environmentVariables><BROWSER>\${env.BROWSER}</BROWSER><HEADED>\${env.HEADED}</HEADED><SLOWMO>\${env.SLOWMO}</SLOWMO></environmentVariables></configuration>
 2. .env file at project root with exactly:
      BROWSER=chromium
      HEADED=false
@@ -108,8 +109,9 @@ function getLanguagePrompt(language, targetUrl) {
    - Creates Playwright via Playwright.create()
    - Reads browser name from System.getenv().getOrDefault("BROWSER", "chromium")
    - Reads headed from "true".equals(System.getenv("HEADED"))
+   - Reads slowMo via: double slowMo = 0; try { slowMo = Double.parseDouble(System.getenv("SLOWMO")); } catch (Exception ignore) {}
    - Selects browser via switch on name (chromium / firefox / webkit -> playwright.chromium()/firefox()/webkit())
-   - Launches with new BrowserType.LaunchOptions().setHeadless(!headed)
+   - Launches with new BrowserType.LaunchOptions().setHeadless(!headed).setSlowMo(slowMo)
    - @BeforeEach creates a new BrowserContext and Page; @AfterEach closes them. Use page.navigate("${targetUrl}") as the base.
 6. README.md MUST document: prerequisites (JDK 17+, Maven 3.8+), install (mvn install -DskipTests), editing .env, using make targets (make test-firefox / make test-headed / etc.), and direct "BROWSER=firefox mvn test" as a fallback.`,
       rules: `CRITICAL RULES for Java:
@@ -140,7 +142,7 @@ function getLanguagePrompt(language, targetUrl) {
      BROWSER=chromium
      HEADED=false
 3. tsconfig.json with: { "compilerOptions": { "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler", "strict": true, "esModuleInterop": true, "skipLibCheck": true, "resolveJsonModule": true, "types": ["node"] }, "include": ["**/*.ts"] }
-4. playwright.config.ts - import 'dotenv/config' as a side-effect at top, then import { defineConfig } from '@playwright/test'. Export default defineConfig({ testDir: './tests', testMatch: '**/*.ts', use: { baseURL: process.env.BASE_URL || '${targetUrl}', headless: process.env.HEADED !== 'true', browserName: (process.env.BROWSER as 'chromium' | 'firefox' | 'webkit') || 'chromium' }, projects: [{ name: process.env.BROWSER || 'chromium' }] }). Do NOT use devices.
+4. playwright.config.ts - import 'dotenv/config' as a side-effect at top, then import { defineConfig } from '@playwright/test'. Export default defineConfig({ testDir: './tests', testMatch: '**/*.ts', use: { baseURL: process.env.BASE_URL || '${targetUrl}', headless: process.env.HEADED !== 'true', browserName: (process.env.BROWSER as 'chromium' | 'firefox' | 'webkit') || 'chromium', launchOptions: { slowMo: parseInt(process.env.SLOWMO || '0', 10) } }, projects: [{ name: process.env.BROWSER || 'chromium' }] }). Do NOT use devices.
 5. Page object .ts files in pages/ - 2-3 page classes. Import Page type: import { Page } from '@playwright/test'. Each class exported: export class LoginPage { constructor(private page: Page) {} ... }. Methods are async with explicit return types where non-trivial (e.g. async isLoaded(): Promise<boolean>).
 6. Test .ts files in tests/ - 2 test files with 2 tests each. Import: import { test, expect } from '@playwright/test'. Tests are async: test('name', async ({ page }) => { ... }).
 7. README.md MUST document: editing .env to change defaults, running "npm run test:firefox" / "npm run test:headed" / etc., and "npm run typecheck" for type checking.`,
@@ -171,7 +173,7 @@ function getLanguagePrompt(language, targetUrl) {
 2. .env file at project root with exactly these two lines:
      BROWSER=chromium
      HEADED=false
-3. playwright.config.js - MUST import 'dotenv/config' at the very top as a side-effect import, then import defineConfig from '@playwright/test', and export default defineConfig({ testDir: './tests', testMatch: '**/*.js', use: { baseURL: process.env.BASE_URL || '${targetUrl}', headless: process.env.HEADED !== 'true', browserName: process.env.BROWSER || 'chromium' }, projects: [{ name: process.env.BROWSER || 'chromium' }] }). Do NOT use devices. testMatch MUST be '**/*.js' so test_*.js files are discovered.
+3. playwright.config.js - MUST import 'dotenv/config' at the very top as a side-effect import, then import defineConfig from '@playwright/test', and export default defineConfig({ testDir: './tests', testMatch: '**/*.js', use: { baseURL: process.env.BASE_URL || '${targetUrl}', headless: process.env.HEADED !== 'true', browserName: process.env.BROWSER || 'chromium', launchOptions: { slowMo: parseInt(process.env.SLOWMO || '0', 10) } }, projects: [{ name: process.env.BROWSER || 'chromium' }] }). Do NOT use devices. testMatch MUST be '**/*.js' so test_*.js files are discovered.
 4. Page object .js files in pages/ - 2-3 page classes. Each class exported with ES module syntax (export class LoginPage {}). Constructor takes (page) only — baseURL comes from config. Methods are async.
 5. Test .js files in tests/ - 2 test files with 2 tests each using @playwright/test (import { test, expect } from '@playwright/test').
 6. README.md MUST document: editing .env to change defaults, and running "npm run test:firefox", "npm run test:headed", etc. for one-off overrides.`,
@@ -465,7 +467,8 @@ function detectLanguage(files) {
 
 // Run tests endpoint
 app.post("/api/run-tests", async (req, res) => {
-  const { files, browser = 'chromium', headed = false } = req.body;
+  const { files, browser = 'chromium', headed = false, slowMo = 0 } = req.body;
+  const slowMoMs = Math.max(0, Math.min(5000, parseInt(slowMo, 10) || 0));
 
   if (!files || !Array.isArray(files)) {
     return res.status(400).json({ error: "No files provided" });
@@ -526,22 +529,26 @@ app.post("/api/run-tests", async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
 
     const sendEvent = (type, data) => {
+      // Annotate report payloads with the browser + headed mode so the UI can show them
+      if (type === 'report' && data && typeof data === 'object') {
+        data = { ...data, browser: selectedBrowser, headed, slowMo: slowMoMs };
+      }
       res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
     };
 
     // Route to appropriate language handler
     if (language === 'csharp') {
       console.log("Routing to C# test execution");
-      await runCSharpTests(tempDir, files, selectedBrowser, headed, sendEvent);
+      await runCSharpTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
     } else if (language === 'javascript' || language === 'typescript') {
       console.log(`Routing to ${language} test execution`);
-      await runJavaScriptTests(tempDir, files, selectedBrowser, headed, sendEvent);
+      await runJavaScriptTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
     } else if (language === 'java') {
       console.log("Routing to Java test execution");
-      await runJavaTests(tempDir, files, selectedBrowser, headed, sendEvent);
+      await runJavaTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
     } else {
       console.log("Routing to Python test execution");
-      await runPythonTests(tempDir, files, selectedBrowser, headed, sendEvent);
+      await runPythonTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
     }
 
     res.end();
@@ -558,7 +565,7 @@ app.post("/api/run-tests", async (req, res) => {
 });
 
 // Python test execution
-async function runPythonTests(tempDir, files, selectedBrowser, headed, sendEvent) {
+async function runPythonTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent) {
   sendEvent('status', 'Creating virtual environment...');
 
   // Create virtual environment
@@ -668,11 +675,14 @@ async function runPythonTests(tempDir, files, selectedBrowser, headed, sendEvent
   if (headed) {
     pytestArgs.push('--headed');
   }
+  if (headed && slowMoMs > 0) {
+    pytestArgs.push(`--slowmo=${slowMoMs}`);
+  }
 
   // Run pytest with JSON report
   const pytest = spawn(venvPython, pytestArgs, {
     cwd: tempDir,
-    env: { ...process.env, PYTHONUNBUFFERED: '1' }
+    env: { ...process.env, PYTHONUNBUFFERED: '1', SLOWMO: String(slowMoMs) }
   });
 
   pytest.stdout.on('data', (data) => {
@@ -730,7 +740,7 @@ async function runPythonTests(tempDir, files, selectedBrowser, headed, sendEvent
 }
 
 // JavaScript (Playwright) test execution
-async function runJavaScriptTests(tempDir, files, selectedBrowser, headed, sendEvent) {
+async function runJavaScriptTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent) {
   sendEvent('status', 'Installing npm dependencies...');
 
   const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
@@ -760,6 +770,7 @@ async function runJavaScriptTests(tempDir, files, selectedBrowser, headed, sendE
     ...process.env,
     BROWSER: selectedBrowser,
     HEADED: headed ? 'true' : 'false',
+    SLOWMO: String(slowMoMs),
     PLAYWRIGHT_JSON_OUTPUT_NAME: reportPath,
     CI: '1'
   };
@@ -841,11 +852,12 @@ function normalizePlaywrightJson(report) {
 }
 
 // Java (Maven + Playwright) test execution
-async function runJavaTests(tempDir, files, selectedBrowser, headed, sendEvent) {
+async function runJavaTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent) {
   const testEnv = {
     ...process.env,
     BROWSER: selectedBrowser,
     HEADED: headed ? 'true' : 'false',
+    SLOWMO: String(slowMoMs),
     // Silence sun.misc.Unsafe warnings from Maven's Guice on JDK 24+
     MAVEN_OPTS: [process.env.MAVEN_OPTS, '--sun-misc-unsafe-memory-access=allow'].filter(Boolean).join(' ')
   };
@@ -956,7 +968,7 @@ function parseSurefireReports(xmlContents) {
 }
 
 // C# test execution
-async function runCSharpTests(tempDir, files, selectedBrowser, headed, sendEvent) {
+async function runCSharpTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent) {
   // Find the .csproj file
   const csprojFile = files.find(f => f.name.endsWith('.csproj'));
   if (!csprojFile) {
@@ -1061,7 +1073,8 @@ async function runCSharpTests(tempDir, files, selectedBrowser, headed, sendEvent
   const testEnv = {
     ...process.env,
     BROWSER: selectedBrowser,
-    HEADED: headed ? 'true' : 'false'
+    HEADED: headed ? 'true' : 'false',
+    SLOWMO: String(slowMoMs)
   };
 
   // Run dotnet test with TRX logger
