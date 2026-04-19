@@ -159,6 +159,35 @@ end-to-end with passing tests on Sauce Demo.
 
 ---
 
+## Security audit — remaining work
+
+Items completed are on `sec/auth-and-path-traversal` (PR open). Items below are still outstanding.
+
+### ✅ Done
+- [x] **C1** Bind Express to `127.0.0.1`; lock CORS to Vite origin; per-process bearer token + `/api/session` bootstrap
+- [x] **C4** Path-traversal guard (`safeJoin`) on file write and zip packaging; null-byte + `..` rejection
+- [x] **H1** SSRF guard (`assertSafeUrl`): scheme allow-list, private-IP/IMDS block, DNS resolution check, 8s timeout, 200 KB cap
+- [x] **C2** `npm install --ignore-scripts`; static scan (`scanGeneratedFiles`) rejects lifecycle hooks, shell-exec patterns, MSBuild `<Exec>`, curl/wget
+- [x] **M3/M4** Subprocess hard-kill timeout (`runWithTimeout`, 10 min, env-configurable); tempdir `rm -rf` in `finally`
+- [x] **M5 (partial)** Run-tests endpoint now returns generic "Test run failed" instead of raw error message
+
+### 🔲 To do
+
+| ID | Severity | Item |
+|----|----------|------|
+| C3 | Critical | **Sandbox test execution** — run each language subprocess in a Docker container (`--network=none` for test phase, network only for install/browser-download phase). Blocks true public deployment. |
+| H3 | High | **API key storage** — move from `localStorage` to `sessionStorage`; warn user if page is not on `localhost`; scrub key from state on modal close without save. |
+| H4 | High | **Rate limiting** — add `express-rate-limit` to `/api/generate` (expensive AI call) and `/api/run-tests` (RCE surface). |
+| M1 | Medium | **Helmet** — add `helmet()` middleware with a strict CSP for production builds. |
+| M5 | Medium | **Error message sanitisation** — audit all remaining `res.status(500).json({ error: error.message })` calls and replace with generic messages; log real errors server-side only. |
+| M6 | Medium | **Debug log cleanup** — gate `console.log("Anthropic API key: ✓ loaded")` and similar startup logs behind `DEBUG=qafg:*`. |
+| L3 | Low | **`archiver` error safety** — `archive.on('error')` re-throws inside an async callback; wrap to respond cleanly instead of crashing the process. |
+| L4 | Low | **Cache provider detection** — `detectProviders()` spawns `claude --version` on every `/api/providers` poll; cache result for 30 s. |
+| L5 | Low | **Input allow-lists** — validate `language` and `framework` from `/api/generate` against known enum values before they enter the prompt. |
+| L6 | Low | **File viewer XSS audit** — confirm no `dangerouslySetInnerHTML` or unsanitised render of generated file content in the React viewer; add a test assertion. |
+
+---
+
 ## Portfolio context
 
 Portfolio piece targeting QA engineers and senior devs. Code quality, UX polish, and
