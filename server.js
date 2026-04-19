@@ -2,7 +2,8 @@ import express from "express";
 import cors from "cors";
 import { spawn } from "child_process";
 import { mkdtemp, writeFile, mkdir, readFile } from "fs/promises";
-import { join, dirname } from "path";
+import { join, dirname, resolve, sep } from "path";
+import { randomBytes } from "crypto";
 import { tmpdir } from "os";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
@@ -20,12 +21,71 @@ console.log("Anthropic API key:", process.env.ANTHROPIC_API_KEY ? "✓ loaded fr
 console.log("OpenAI API key:", process.env.OPENAI_API_KEY ? "✓ loaded from env" : "not set (optional)");
 
 const app = express();
-app.use(cors());
+
+// --- Security: bound origin + auth token -------------------------------------
+// CORS is restricted to the Vite dev origin (and an optional user-specified one).
+// Any other origin is rejected before the handler runs.
+const DEV_ORIGINS = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173'
+];
+const EXTRA_ORIGIN = process.env.QAFG_ALLOWED_ORIGIN;
+const ALLOWED_ORIGINS = EXTRA_ORIGIN ? [...DEV_ORIGINS, EXTRA_ORIGIN] : DEV_ORIGINS;
+app.use(cors({
+  origin: (origin, cb) => {
+    // Same-origin (no Origin header, e.g. curl from localhost) is allowed.
+    if (!origin) return cb(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    return cb(new Error(`Origin ${origin} not allowed`));
+  },
+  credentials: true
+}));
 app.use(express.json({ limit: '10mb' }));
+
+// Bearer token: generated per process start if not provided via env.
+// The Vite dev server injects this into the frontend via `import.meta.env.VITE_QAFG_TOKEN`
+// (see the dev:all npm script). The token is required on every /api/* call.
+const AUTH_TOKEN = process.env.QAFG_TOKEN || randomBytes(24).toString('hex');
+if (!process.env.QAFG_TOKEN) {
+  // Surface the generated token so the dev script can pick it up.
+  console.log(`[auth] generated session token: ${AUTH_TOKEN}`);
+}
+
+// Routes that do not require a bearer token. `/api/session` hands the token to
+// the frontend on initial load — this is safe because CORS already restricts
+// which browser origins can read the response.
+const PUBLIC_ROUTES = new Set(['/api/health', '/api/session']);
+
+app.use((req, res, next) => {
+  if (PUBLIC_ROUTES.has(req.path)) return next();
+  if (!req.path.startsWith('/api/')) return next();
+  const header = req.get('authorization') || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  if (token !== AUTH_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+});
+
+app.get('/api/session', (req, res) => {
+  res.json({ token: AUTH_TOKEN });
+});
 
 // Serve static frontend files in production
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(join(__dirname, 'dist')));
+}
+
+// --- Security: path-traversal guard ------------------------------------------
+// Resolve `parts` under `base` and reject any result that escapes the base
+// (via '..', absolute segments, or symlink shenanigans at write time).
+function safeJoin(base, ...parts) {
+  const baseResolved = resolve(base);
+  const candidate = resolve(baseResolved, ...parts.filter(Boolean));
+  if (candidate !== baseResolved && !candidate.startsWith(baseResolved + sep)) {
+    throw new Error(`Path escapes base directory: ${parts.join('/')}`);
+  }
+  return candidate;
 }
 
 // Build language-specific file list and rules for the generation prompt
@@ -402,7 +462,7 @@ app.post("/api/download-zip", async (req, res) => {
     for (const file of files) {
       let filePath = (file.path || '').replace(/^\/+|\/+$/g, '');
       let fileName = file.name;
-      
+
       // Handle paths in filename
       if (fileName.includes('/')) {
         const parts = fileName.split('/');
@@ -412,9 +472,19 @@ app.post("/api/download-zip", async (req, res) => {
           filePath = fileNamePath;
         }
       }
-      
-      const fullPath = filePath ? `${filePath}/${fileName}` : fileName;
-      archive.append(file.content, { name: fullPath });
+
+      // Zip-slip guard: reject absolute, traversal, and null-byte entries.
+      const entryPath = filePath ? `${filePath}/${fileName}` : fileName;
+      if (
+        entryPath.includes('\0') ||
+        entryPath.startsWith('/') ||
+        entryPath.split('/').some((seg) => seg === '..')
+      ) {
+        console.warn('Skipping unsafe zip entry:', entryPath);
+        continue;
+      }
+
+      archive.append(file.content, { name: entryPath });
     }
 
     await archive.finalize();
@@ -511,8 +581,12 @@ app.post("/api/run-tests", async (req, res) => {
         }
       }
 
-      const fullDir = filePath ? join(tempDir, filePath) : tempDir;
-      const fullPath = join(fullDir, fileName);
+      // Path-traversal guard: reject absolute paths, '..' escapes, and null bytes.
+      if (fileName.includes('\0') || filePath.includes('\0')) {
+        throw new Error('Invalid file path (null byte)');
+      }
+      const fullPath = safeJoin(tempDir, filePath, fileName);
+      const fullDir = filePath ? safeJoin(tempDir, filePath) : tempDir;
 
       // Create directory if needed
       if (filePath) {
@@ -1213,6 +1287,10 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+// Bind to loopback by default so the server is not reachable from the LAN.
+// Set QAFG_HOST=0.0.0.0 (or a specific interface) to override — only do this
+// when you've fronted the app with auth + TLS and understand the RCE surface.
+const HOST = process.env.QAFG_HOST || '127.0.0.1';
+app.listen(PORT, HOST, () => {
+  console.log(`Server running on http://${HOST}:${PORT}`);
 });
