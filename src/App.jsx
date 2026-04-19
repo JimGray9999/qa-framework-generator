@@ -86,8 +86,8 @@ const QAFrameworkGenerator = () => {
     addLog(`Stack: ${config.language} + ${config.framework}`);
 
     try {
-      addLog('Analyzing target site structure...');
-      
+      addLog('Fetching and analyzing target site...');
+
       const response = await apiFetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -101,7 +101,21 @@ const QAFrameworkGenerator = () => {
       });
 
       const data = await response.json();
-      addLog('Received response from AI...');
+
+      // Show page analysis details in the log
+      if (data.pageAnalysis) {
+        const pa = data.pageAnalysis;
+        if (pa.fetched) {
+          addLog(`📄 Page title: "${pa.title || 'n/a'}"`);
+          if (pa.inputs.length)  addLog(`🔤 Inputs detected: ${pa.inputs.slice(0, 6).join(', ')}`);
+          if (pa.buttons.length) addLog(`🔘 Buttons detected: ${pa.buttons.slice(0, 6).join(', ')}`);
+          if (pa.links.length)   addLog(`🔗 Links detected: ${pa.links.slice(0, 5).join(', ')}`);
+          if (pa.forms.length)   addLog(`📋 Forms detected: ${pa.forms.join(', ')}`);
+        } else {
+          addLog('⚠️ Could not fetch page — using defensive selectors');
+        }
+      }
+      addLog('Sending to AI for framework generation...');
 
       if (data.content && data.content[0] && data.content[0].text) {
         const text = data.content[0].text;
@@ -772,15 +786,16 @@ const QAFrameworkGenerator = () => {
       {activeTab === 'config' && (
         <div style={{
           flex: 1,
-          overflow: 'auto',
+          overflow: 'hidden',
           padding: '28px',
           display: 'flex',
-          justifyContent: 'center',
+          gap: '24px',
           alignItems: 'flex-start',
         }}>
+          {/* ── Left: config card ── */}
           <div style={{
-            width: '100%',
-            maxWidth: '560px',
+            width: '460px',
+            flexShrink: 0,
             background: 'rgba(30, 30, 45, 0.8)',
             borderRadius: '14px',
             padding: '32px',
@@ -881,23 +896,56 @@ const QAFrameworkGenerator = () => {
                 : <><span>🚀</span> Generate Framework</>}
             </button>
 
-            {/* Analysis Log */}
-            {analysisLog.length > 0 && (
-              <div style={{ marginTop: '20px', padding: '12px', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', fontSize: '0.7rem', maxHeight: '130px', overflowY: 'auto' }}>
-                {analysisLog.map((log, i) => (
-                  <div key={i} style={{ color: log.message.startsWith('✓') ? '#4ade80' : log.message.startsWith('✗') ? '#f87171' : '#9ca3af', marginBottom: '4px' }}>
-                    <span style={{ color: '#4b5563' }}>[{log.time}]</span> {log.message}
-                  </div>
-                ))}
-              </div>
-            )}
-
             {/* Error */}
             {error && (
               <div style={{ marginTop: '16px', padding: '12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '8px', color: '#f87171', fontSize: '0.8rem' }}>
                 {error}
               </div>
             )}
+          </div>
+
+          {/* ── Right: analysis log ── */}
+          <div style={{
+            flex: 1,
+            alignSelf: 'stretch',
+            background: 'rgba(10, 10, 16, 0.95)',
+            borderRadius: '14px',
+            border: '1px solid rgba(99, 102, 241, 0.15)',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            minHeight: '300px',
+          }}>
+            {/* Log header */}
+            <div style={{ padding: '10px 16px', borderBottom: '1px solid rgba(99,102,241,0.1)', display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+              <div style={{ display: 'flex', gap: '5px' }}>
+                <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#ff5f56' }} />
+                <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#ffbd2e' }} />
+                <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#27ca3f' }} />
+              </div>
+              <span style={{ fontSize: '0.72rem', color: '#4b5563', marginLeft: '8px' }}>Page Analysis &amp; Generation Log</span>
+              {isGenerating && <span style={{ fontSize: '0.68rem', color: '#818cf8', marginLeft: 'auto', animation: 'pulse 1s infinite' }}>● working</span>}
+            </div>
+            {/* Log body */}
+            <div style={{ flex: 1, overflow: 'auto', padding: '14px 16px', fontFamily: 'monospace', fontSize: '0.74rem', lineHeight: '1.7' }}>
+              {analysisLog.length === 0 ? (
+                <div style={{ color: '#374151', fontStyle: 'italic' }}>Waiting — hit Generate Framework to start...</div>
+              ) : (
+                analysisLog.map((log, i) => (
+                  <div key={i} style={{
+                    color: log.message.startsWith('✓') ? '#4ade80'
+                         : log.message.startsWith('✗') ? '#f87171'
+                         : log.message.startsWith('⚠') ? '#fbbf24'
+                         : log.message.startsWith('📄') ? '#c084fc'
+                         : log.message.startsWith('🔤') || log.message.startsWith('🔘') || log.message.startsWith('🔗') || log.message.startsWith('📋') ? '#a5b4fc'
+                         : '#6b7280',
+                    marginBottom: '2px',
+                  }}>
+                    <span style={{ color: '#374151' }}>[{log.time}]</span> {log.message}
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1056,7 +1104,7 @@ const QAFrameworkGenerator = () => {
                 {/* Slow-mo (headed only) */}
                 {config.headed && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '180px' }}>
-                    <label style={{ ...labelStyle, marginBottom: '2px' }}>🐢 Slow Mo <span style={{ color: '#a5b4fc', fontFamily: 'monospace' }}>{config.slowMo}ms</span></label>
+                    <label style={{ ...labelStyle, marginBottom: '2px' }}>🐢 Test Speed <span style={{ color: '#a5b4fc', fontFamily: 'monospace' }}>{config.slowMo}ms</span></label>
                     <input type="range" min="0" max="2000" step="100" value={config.slowMo} onChange={(e) => setConfig({ ...config, slowMo: parseInt(e.target.value, 10) })} style={{ accentColor: '#6366f1', width: '100%' }} />
                   </div>
                 )}

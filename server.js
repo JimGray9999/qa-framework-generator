@@ -485,29 +485,29 @@ app.post("/api/generate", async (req, res) => {
 
     // Fetch the target page to analyze its structure (SSRF-safe)
     let pageAnalysis = "";
+    let pageData = { fetched: false, title: '', inputs: [], buttons: [], links: [], forms: [] };
     try {
       const html = await fetchPageSafely(targetUrl);
-      
+
       // Extract useful selectors from the HTML (limit size for Claude)
       const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-      const title = titleMatch ? titleMatch[1].trim() : '';
-      
-      // Find common interactive elements
-      const inputs = [...html.matchAll(/<input[^>]*(id|name|placeholder|aria-label)="([^"]+)"[^>]*>/gi)].slice(0, 10);
-      const buttons = [...html.matchAll(/<button[^>]*>([^<]+)<\/button>/gi)].slice(0, 10);
-      const links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([^<]+)<\/a>/gi)].slice(0, 10);
-      const forms = [...html.matchAll(/<form[^>]*(id|name|action)="([^"]+)"[^>]*>/gi)].slice(0, 5);
-      
+      pageData.title = titleMatch ? titleMatch[1].trim() : '';
+      pageData.inputs = [...html.matchAll(/<input[^>]*(id|name|placeholder|aria-label)="([^"]+)"[^>]*>/gi)].slice(0, 10).map(m => m[2]);
+      pageData.buttons = [...html.matchAll(/<button[^>]*>([^<]+)<\/button>/gi)].slice(0, 10).map(m => m[1].trim()).filter(b => b.length < 30);
+      pageData.links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([^<]+)<\/a>/gi)].slice(0, 5).map(m => m[2].trim()).filter(l => l.length < 30);
+      pageData.forms = [...html.matchAll(/<form[^>]*(id|name|action)="([^"]+)"[^>]*>/gi)].slice(0, 5).map(m => m[2]);
+      pageData.fetched = true;
+
       pageAnalysis = `
 ACTUAL PAGE ANALYSIS for ${targetUrl}:
-- Page title: "${title}"
-- Input fields found: ${inputs.map(m => m[2]).join(', ') || 'none detected'}
-- Buttons found: ${buttons.map(m => m[1].trim()).filter(b => b.length < 30).join(', ') || 'none detected'}
-- Key links: ${links.slice(0, 5).map(m => m[2].trim()).filter(l => l.length < 30).join(', ') || 'none detected'}
-- Forms: ${forms.map(m => m[2]).join(', ') || 'none detected'}
+- Page title: "${pageData.title}"
+- Input fields found: ${pageData.inputs.join(', ') || 'none detected'}
+- Buttons found: ${pageData.buttons.join(', ') || 'none detected'}
+- Key links: ${pageData.links.join(', ') || 'none detected'}
+- Forms: ${pageData.forms.join(', ') || 'none detected'}
 
 USE THESE REAL SELECTORS in your page objects. If specific selectors aren't available, use defensive checks like page.title() or page.url.`;
-      
+
       console.log("Page analysis:", pageAnalysis);
     } catch (fetchError) {
       console.log("Could not fetch target page:", fetchError.message);
@@ -546,9 +546,8 @@ Use \\n for newlines, \\" for quotes. Output ONLY valid JSON.`;
     const parsed = extractJSON(text);
     
     res.json({
-      content: [{
-        text: JSON.stringify(parsed)
-      }]
+      content: [{ text: JSON.stringify(parsed) }],
+      pageAnalysis: pageData
     });
     
   } catch (error) {
