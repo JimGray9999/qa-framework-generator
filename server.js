@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { spawn } from "child_process";
-import { mkdtemp, writeFile, mkdir, readFile } from "fs/promises";
+import { mkdtemp, writeFile, mkdir, readFile, rm } from "fs/promises";
 import { join, dirname, resolve, sep } from "path";
 import { randomBytes } from "crypto";
 import { tmpdir } from "os";
@@ -74,6 +74,135 @@ app.get('/api/session', (req, res) => {
 // Serve static frontend files in production
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(join(__dirname, 'dist')));
+}
+
+// --- Security: subprocess timeout helper --------------------------------------
+// Wraps a spawn'd process in a hard timeout. On expiry the process tree is
+// killed with SIGKILL and the promise rejects. Default: 10 minutes.
+const TEST_TIMEOUT_MS = parseInt(process.env.QAFG_TEST_TIMEOUT_MS || '600000', 10);
+
+function runWithTimeout(proc, timeoutMs = TEST_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      try { proc.kill('SIGKILL'); } catch {}
+      reject(new Error(`Process timed out after ${Math.round(timeoutMs / 1000)}s`));
+    }, timeoutMs);
+
+    proc.on('close', (code) => { clearTimeout(timer); resolve(code); });
+    proc.on('error', (err) => { clearTimeout(timer); reject(err); });
+  });
+}
+
+// --- Security: SSRF guard -----------------------------------------------------
+// Reject targetUrl values that could reach internal infrastructure.
+import { lookup } from "dns/promises";
+
+const PRIVATE_RANGES = [
+  /^127\./,                        // loopback
+  /^10\./,                         // RFC 1918
+  /^172\.(1[6-9]|2\d|3[01])\./,   // RFC 1918
+  /^192\.168\./,                   // RFC 1918
+  /^169\.254\./,                   // link-local / AWS IMDS
+  /^::1$/,                         // IPv6 loopback
+  /^fc|^fd/,                       // IPv6 ULA
+  /^0\./,                          // this-network
+];
+
+async function assertSafeUrl(raw) {
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('Invalid URL');
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    throw new Error('Only http:// and https:// URLs are allowed');
+  }
+  const hostname = url.hostname;
+  // Block bare IP literals
+  if (/^[\d.]+$/.test(hostname) || hostname.includes(':')) {
+    if (PRIVATE_RANGES.some(r => r.test(hostname))) {
+      throw new Error('Requests to private/internal IP addresses are not allowed');
+    }
+  } else {
+    // Resolve hostname and check the resulting IPs
+    let addrs;
+    try {
+      addrs = await lookup(hostname, { all: true });
+    } catch {
+      throw new Error(`Could not resolve hostname: ${hostname}`);
+    }
+    for (const { address } of addrs) {
+      if (PRIVATE_RANGES.some(r => r.test(address))) {
+        throw new Error(`Hostname ${hostname} resolves to a private/internal address`);
+      }
+    }
+  }
+}
+
+async function fetchPageSafely(targetUrl) {
+  await assertSafeUrl(targetUrl);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetch(targetUrl, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; QAFrameworkGenerator/1.0)' }
+    });
+    // Cap response to 200 KB to prevent ReDoS on giant HTML
+    const reader = res.body.getReader();
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > 200_000) { reader.cancel(); break; }
+      chunks.push(value);
+    }
+    const buf = new Uint8Array(total > 200_000 ? 200_000 : total);
+    let offset = 0;
+    for (const c of chunks) { buf.set(c, offset); offset += c.length; }
+    return new TextDecoder().decode(buf);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// --- Security: static scan of AI-generated files ----------------------------
+// Reject files that contain known-dangerous patterns before writing to disk.
+// This is a best-effort defence against prompt-injection → code-injection;
+// not a complete sandbox, but catches the obvious cases.
+const DANGEROUS_PATTERNS = [
+  // Shell execution in JS/TS
+  { re: /child_process|execSync|spawnSync|eval\s*\(/, label: 'shell execution (JS/TS)' },
+  // Lifecycle script hooks in package.json
+  { re: /"(preinstall|postinstall|prepare|prepack|postpack)"\s*:/, label: 'npm lifecycle script hook' },
+  // Shell execution in Python
+  { re: /\bos\.system\s*\(|subprocess\.(?:run|Popen|call|check_output)\s*\(/, label: 'shell execution (Python)' },
+  // Shell in Java
+  { re: /Runtime\.getRuntime\(\)\.exec|ProcessBuilder/, label: 'shell execution (Java)' },
+  // Shell in C#
+  { re: /System\.Diagnostics\.Process/, label: 'shell execution (C#)' },
+  // Outbound curl/wget/fetch to non-localhost
+  { re: /\bcurl\b|\bwget\b/, label: 'curl/wget invocation' },
+  // MSBuild exec task in .csproj
+  { re: /<Exec\s+Command/i, label: 'MSBuild Exec task' },
+  // Maven exec plugin with arbitrary commands
+  { re: /exec\.executable.*(?:bash|sh|cmd|powershell)/i, label: 'Maven arbitrary exec' },
+];
+
+function scanGeneratedFiles(files) {
+  for (const file of files) {
+    const content = file.content || '';
+    for (const { re, label } of DANGEROUS_PATTERNS) {
+      if (re.test(content)) {
+        throw new Error(
+          `Generated file "${file.name}" contains a potentially unsafe pattern: ${label}. Regenerate or inspect manually.`
+        );
+      }
+    }
+  }
 }
 
 // --- Security: path-traversal guard ------------------------------------------
@@ -354,15 +483,10 @@ app.post("/api/generate", async (req, res) => {
   try {
     const { language, framework, targetUrl, provider, apiKey } = req.body;
 
-    // Fetch the target page to analyze its structure
+    // Fetch the target page to analyze its structure (SSRF-safe)
     let pageAnalysis = "";
     try {
-      const fetchResponse = await fetch(targetUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-      });
-      const html = await fetchResponse.text();
+      const html = await fetchPageSafely(targetUrl);
       
       // Extract useful selectors from the HTML (limit size for Claude)
       const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
@@ -553,6 +677,13 @@ app.post("/api/run-tests", async (req, res) => {
   console.log("Detected language:", language);
   console.log("Files received:", files.map(f => ({ name: f.name, path: f.path })));
 
+  // Static safety scan before touching the filesystem
+  try {
+    scanGeneratedFiles(files);
+  } catch (scanErr) {
+    return res.status(400).json({ error: scanErr.message });
+  }
+
   let tempDir;
 
   try {
@@ -630,10 +761,17 @@ app.post("/api/run-tests", async (req, res) => {
   } catch (error) {
     console.error("Run tests error:", error);
     if (!res.headersSent) {
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: 'Test run failed' });
     } else {
-      res.write(`data: ${JSON.stringify({ type: 'error', data: error.message })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: 'error', data: 'Test run failed' })}\n\n`);
       res.end();
+    }
+  } finally {
+    // Always clean up the tempdir to avoid disk fill.
+    if (tempDir) {
+      rm(tempDir, { recursive: true, force: true }).catch(e =>
+        console.warn('Could not remove tempdir:', e.message)
+      );
     }
   }
 });
@@ -767,50 +905,43 @@ async function runPythonTests(tempDir, files, selectedBrowser, headed, slowMoMs,
     sendEvent('test', data.toString());
   });
 
-  await new Promise((resolve) => {
-    pytest.on('close', async (code) => {
-      // Try to read and parse the JSON report
-      try {
-        const { readFile } = await import('fs/promises');
-        const reportContent = await readFile(reportPath, 'utf-8');
-        const report = JSON.parse(reportContent);
-
-        // Send structured report data
-        sendEvent('report', {
-          summary: {
-            total: report.summary?.total || 0,
-            passed: report.summary?.passed || 0,
-            failed: report.summary?.failed || 0,
-            error: report.summary?.error || 0,
-            skipped: report.summary?.skipped || 0,
-            duration: report.duration || 0
-          },
-          tests: (report.tests || []).map(t => ({
-            nodeid: t.nodeid,
-            outcome: t.outcome,
-            duration: t.call?.duration || t.setup?.duration || 0,
-            setup: t.setup?.outcome,
-            call: t.call?.outcome,
-            teardown: t.teardown?.outcome,
-            error: t.call?.longrepr || t.setup?.longrepr || null,
-            stdout: t.call?.stdout || null,
-            stderr: t.call?.stderr || null
-          })),
-          environment: report.environment || {},
-          created: report.created
-        });
-      } catch (e) {
-        console.log('Could not read JSON report:', e.message);
-      }
-
-      sendEvent('complete', { exitCode: code });
-      resolve();
-    });
-    pytest.on('error', (err) => {
-      sendEvent('error', err.message);
-      resolve();
-    });
+  const code = await runWithTimeout(pytest).catch(err => {
+    sendEvent('error', err.message);
+    return -1;
   });
+
+  // Read and send the JSON report
+  try {
+    const reportContent = await readFile(reportPath, 'utf-8');
+    const report = JSON.parse(reportContent);
+    sendEvent('report', {
+      summary: {
+        total: report.summary?.total || 0,
+        passed: report.summary?.passed || 0,
+        failed: report.summary?.failed || 0,
+        error: report.summary?.error || 0,
+        skipped: report.summary?.skipped || 0,
+        duration: report.duration || 0
+      },
+      tests: (report.tests || []).map(t => ({
+        nodeid: t.nodeid,
+        outcome: t.outcome,
+        duration: t.call?.duration || t.setup?.duration || 0,
+        setup: t.setup?.outcome,
+        call: t.call?.outcome,
+        teardown: t.teardown?.outcome,
+        error: t.call?.longrepr || t.setup?.longrepr || null,
+        stdout: t.call?.stdout || null,
+        stderr: t.call?.stderr || null
+      })),
+      environment: report.environment || {},
+      created: report.created
+    });
+  } catch (e) {
+    console.log('Could not read JSON report:', e.message);
+  }
+
+  sendEvent('complete', { exitCode: code });
 }
 
 // JavaScript (Playwright) test execution
@@ -820,7 +951,7 @@ async function runJavaScriptTests(tempDir, files, selectedBrowser, headed, slowM
   const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 
-  const npmInstall = spawn(npmCmd, ['install', '--no-audit', '--no-fund'], { cwd: tempDir });
+  const npmInstall = spawn(npmCmd, ['install', '--no-audit', '--no-fund', '--ignore-scripts'], { cwd: tempDir });
   npmInstall.stdout.on('data', (d) => sendEvent('pip', d.toString()));
   npmInstall.stderr.on('data', (d) => sendEvent('pip', d.toString()));
   await new Promise((resolve, reject) => {
@@ -858,23 +989,19 @@ async function runJavaScriptTests(tempDir, files, selectedBrowser, headed, slowM
   testProcess.stdout.on('data', (d) => sendEvent('test', d.toString()));
   testProcess.stderr.on('data', (d) => sendEvent('test', d.toString()));
 
-  await new Promise((resolve) => {
-    testProcess.on('close', async (code) => {
-      try {
-        const reportContent = await readFile(reportPath, 'utf-8');
-        const report = JSON.parse(reportContent);
-        sendEvent('report', normalizePlaywrightJson(report));
-      } catch (e) {
-        console.log('Could not read Playwright JSON report:', e.message);
-      }
-      sendEvent('complete', { exitCode: code });
-      resolve();
-    });
-    testProcess.on('error', (err) => {
-      sendEvent('error', err.message);
-      resolve();
-    });
+  const code = await runWithTimeout(testProcess).catch(err => {
+    sendEvent('error', err.message);
+    return -1;
   });
+
+  try {
+    const reportContent = await readFile(reportPath, 'utf-8');
+    const report = JSON.parse(reportContent);
+    sendEvent('report', normalizePlaywrightJson(report));
+  } catch (e) {
+    console.log('Could not read Playwright JSON report:', e.message);
+  }
+  sendEvent('complete', { exitCode: code });
 }
 
 // Normalize Playwright's JSON reporter output to the common report shape
@@ -1173,32 +1300,24 @@ async function runCSharpTests(tempDir, files, selectedBrowser, headed, slowMoMs,
     sendEvent('test', data.toString());
   });
 
-  await new Promise((resolve) => {
-    testProcess.on('close', async (code) => {
-      // Try to parse TRX file
-      try {
-        const { readdir, readFile } = await import('fs/promises');
-        const files = await readdir(reportDir);
-        const trxFile = files.find(f => f.endsWith('.trx'));
-
-        if (trxFile) {
-          const trxPath = join(reportDir, trxFile);
-          const trxContent = await readFile(trxPath, 'utf-8');
-          const report = parseTrxReport(trxContent);
-          sendEvent('report', report);
-        }
-      } catch (e) {
-        console.log('Could not read TRX report:', e.message);
-      }
-
-      sendEvent('complete', { exitCode: code });
-      resolve();
-    });
-    testProcess.on('error', (err) => {
-      sendEvent('error', err.message);
-      resolve();
-    });
+  const code = await runWithTimeout(testProcess).catch(err => {
+    sendEvent('error', err.message);
+    return -1;
   });
+
+  try {
+    const { readdir } = await import('fs/promises');
+    const dirFiles = await readdir(reportDir);
+    const trxFile = dirFiles.find(f => f.endsWith('.trx'));
+    if (trxFile) {
+      const trxContent = await readFile(join(reportDir, trxFile), 'utf-8');
+      sendEvent('report', parseTrxReport(trxContent));
+    }
+  } catch (e) {
+    console.log('Could not read TRX report:', e.message);
+  }
+
+  sendEvent('complete', { exitCode: code });
 }
 
 // Parse TRX XML report to normalized JSON format
