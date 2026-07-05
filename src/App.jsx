@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useFrameworkStorage } from './useFrameworkStorage';
 
 const loadSettings = () => {
   try {
@@ -47,6 +48,22 @@ const IconDownload = ({ size = 13 }) => (
 const IconLightning = ({ size = 14 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round">
     <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+  </svg>
+);
+
+const IconClock = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+    <circle cx="12" cy="12" r="9"/>
+    <path d="M12 7v5l3 3"/>
+  </svg>
+);
+
+const IconTrash = ({ size = 13 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+    <polyline points="3 6 5 6 21 6"/>
+    <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
+    <path d="M10 11v6M14 11v6"/>
+    <path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>
   </svg>
 );
 
@@ -156,6 +173,8 @@ const QAFrameworkGenerator = () => {
   const [expandedTests, setExpandedTests] = useState({});
   const [activeTab, setActiveTab] = useState('config');
 
+  const { saved, save: saveToLibrary, remove: removeFromLibrary } = useFrameworkStorage();
+
   const logEndRef = useRef(null);
   const termEndRef = useRef(null);
 
@@ -233,6 +252,9 @@ const QAFrameworkGenerator = () => {
             setGeneratedFiles(result);
             setActiveFile(result.files[0]?.name);
             addLog(`✓ Generated ${result.files.length} files`);
+            saveToLibrary(result, config)
+              .then(entry => addLog(`✓ Saved to library as "${entry.name}"`))
+              .catch(() => {});
             addLog('Framework ready!');
             setActiveTab('explorer');
           } else {
@@ -398,12 +420,33 @@ const QAFrameworkGenerator = () => {
 
   // ─── Nav items ────────────────────────────────────────────────────────────
   const navItems = [
-    { id: 'config',   label: 'Config', icon: <IconGrid /> },
-    { id: 'explorer', label: 'Files',  icon: <IconFolder /> },
-    { id: 'testrun',  label: 'Tests',  icon: <IconPlay /> },
+    { id: 'config',   label: 'Config',   icon: <IconGrid /> },
+    { id: 'explorer', label: 'Files',    icon: <IconFolder /> },
+    { id: 'testrun',  label: 'Tests',    icon: <IconPlay /> },
+    { id: 'library',  label: 'Library',  icon: <IconClock /> },
   ];
 
-  const tabLabel = { config: 'Framework Configuration', explorer: 'File Explorer', testrun: 'Test Runner' };
+  const tabLabel = { config: 'Framework Configuration', explorer: 'File Explorer', testrun: 'Test Runner', library: 'Saved Frameworks' };
+
+  const loadFromLibrary = (entry) => {
+    setGeneratedFiles({ files: entry.files });
+    setActiveFile(entry.files[0]?.name || null);
+    setConfig(prev => ({ ...prev, language: entry.language, framework: entry.framework, targetUrl: entry.targetUrl }));
+    setTestReport(null);
+    setTestOutput([]);
+    setTestStatus(null);
+    setActiveTab('explorer');
+  };
+
+  const fmtDate = (ts) => {
+    const d = new Date(ts);
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const langColor = (lang) => {
+    const map = { python: '#3b82f6', java: '#f59e0b', javascript: '#eab308', typescript: '#06b6d4', 'c#': '#a78bfa' };
+    return map[lang?.toLowerCase()] || '#6366f1';
+  };
 
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
@@ -923,6 +966,73 @@ const QAFrameworkGenerator = () => {
                   </>
                 )}
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Tab: Library ── */}
+        {activeTab === 'library' && (
+          <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '24px 28px' }}>
+              {saved.length === 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px', color: '#3f3f46', paddingBottom: '60px' }}>
+                  <div style={{ fontSize: '3rem', opacity: 0.25 }}>🗂</div>
+                  <p style={{ fontSize: '13px', textAlign: 'center', lineHeight: 1.6 }}>
+                    No saved frameworks yet.<br/>Generate one to add it to your library.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div style={{ marginBottom: '18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <h2 style={{ fontSize: '14px', fontWeight: 700, color: '#f4f4f5', margin: 0 }}>Saved Frameworks</h2>
+                    <span style={{ fontSize: '11px', color: '#52525b' }}>{saved.length} saved</span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(310px, 1fr))', gap: '12px' }}>
+                    {saved.map(entry => (
+                      <div key={entry.id} style={{ background: '#111316', border: '1px solid rgba(255,255,255,.07)', borderRadius: '10px', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                        {/* Name + lang badge */}
+                        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '10px' }}>
+                          <span style={{ fontSize: '13px', fontWeight: 600, color: '#f4f4f5', lineHeight: 1.35, wordBreak: 'break-all' }}>{entry.name}</span>
+                          <span style={{ flexShrink: 0, fontSize: '10px', fontWeight: 700, padding: '3px 8px', borderRadius: '20px', background: `${langColor(entry.language)}20`, color: langColor(entry.language), border: `1px solid ${langColor(entry.language)}40`, textTransform: 'capitalize', letterSpacing: '.03em' }}>
+                            {entry.language}
+                          </span>
+                        </div>
+                        {/* Meta row */}
+                        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '11px', color: '#52525b', fontFamily: "'JetBrains Mono', monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '180px' }}>{entry.targetUrl}</span>
+                          <span style={{ fontSize: '11px', color: '#3f3f46' }}>·</span>
+                          <span style={{ fontSize: '11px', color: '#52525b' }}>{entry.fileCount} files</span>
+                          <span style={{ fontSize: '11px', color: '#3f3f46' }}>·</span>
+                          <span style={{ fontSize: '11px', color: '#3f3f46' }}>{entry.framework}</span>
+                        </div>
+                        {/* Date + actions */}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '2px' }}>
+                          <span style={{ fontSize: '10px', color: '#3f3f46' }}>{fmtDate(entry.createdAt)}</span>
+                          <div style={{ display: 'flex', gap: '7px' }}>
+                            <button
+                              onClick={() => removeFromLibrary(entry.id)}
+                              title="Delete"
+                              style={{ padding: '5px 7px', background: 'transparent', border: '1px solid rgba(239,68,68,.2)', borderRadius: '6px', color: '#7f1d1d', cursor: 'pointer', display: 'flex', alignItems: 'center', transition: 'all .15s' }}
+                              onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(239,68,68,.5)'; e.currentTarget.style.color = '#f87171'; }}
+                              onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(239,68,68,.2)'; e.currentTarget.style.color = '#7f1d1d'; }}
+                            >
+                              <IconTrash />
+                            </button>
+                            <button
+                              onClick={() => loadFromLibrary(entry)}
+                              style={{ padding: '5px 14px', background: 'rgba(99,102,241,.15)', border: '1px solid rgba(99,102,241,.3)', borderRadius: '6px', color: '#a5b4fc', cursor: 'pointer', fontSize: '11px', fontWeight: 600, fontFamily: "'Inter', sans-serif", transition: 'all .15s' }}
+                              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(99,102,241,.25)'; }}
+                              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(99,102,241,.15)'; }}
+                            >
+                              Load
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}
