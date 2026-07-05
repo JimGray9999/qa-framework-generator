@@ -27,7 +27,11 @@ const app = express();
 // Any other origin is rejected before the handler runs.
 const DEV_ORIGINS = [
   'http://localhost:5173',
-  'http://127.0.0.1:5173'
+  'http://127.0.0.1:5173',
+  'http://localhost:5174',
+  'http://127.0.0.1:5174',
+  'http://localhost:3001',
+  'http://127.0.0.1:3001'
 ];
 const EXTRA_ORIGIN = process.env.QAFG_ALLOWED_ORIGIN;
 const ALLOWED_ORIGINS = EXTRA_ORIGIN ? [...DEV_ORIGINS, EXTRA_ORIGIN] : DEV_ORIGINS;
@@ -249,6 +253,7 @@ function getLanguagePrompt(language, targetUrl) {
 5. Test .cs files in Tests/ - 2 test files with 2 tests each using NUnit [Test]
 6. README.md MUST document: editing .env to change defaults, plus "make test-firefox" / "make test-headed" / etc. for one-off overrides.`,
       rules: `CRITICAL RULES for C#:
+- The .csproj MUST use <TargetFramework>net10.0</TargetFramework> — .NET 8 is NOT installed on this machine
 - EVERY test file MUST start with: using NUnit.Framework; using Microsoft.Playwright;
 - EVERY page object MUST start with: using Microsoft.Playwright;
 - Use Microsoft.Playwright and NUnit. Use async/await for all Playwright calls
@@ -485,29 +490,29 @@ app.post("/api/generate", async (req, res) => {
 
     // Fetch the target page to analyze its structure (SSRF-safe)
     let pageAnalysis = "";
+    let pageData = { fetched: false, title: '', inputs: [], buttons: [], links: [], forms: [] };
     try {
       const html = await fetchPageSafely(targetUrl);
-      
+
       // Extract useful selectors from the HTML (limit size for Claude)
       const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-      const title = titleMatch ? titleMatch[1].trim() : '';
-      
-      // Find common interactive elements
-      const inputs = [...html.matchAll(/<input[^>]*(id|name|placeholder|aria-label)="([^"]+)"[^>]*>/gi)].slice(0, 10);
-      const buttons = [...html.matchAll(/<button[^>]*>([^<]+)<\/button>/gi)].slice(0, 10);
-      const links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([^<]+)<\/a>/gi)].slice(0, 10);
-      const forms = [...html.matchAll(/<form[^>]*(id|name|action)="([^"]+)"[^>]*>/gi)].slice(0, 5);
-      
+      pageData.title = titleMatch ? titleMatch[1].trim() : '';
+      pageData.inputs = [...html.matchAll(/<input[^>]*(id|name|placeholder|aria-label)="([^"]+)"[^>]*>/gi)].slice(0, 10).map(m => m[2]);
+      pageData.buttons = [...html.matchAll(/<button[^>]*>([^<]+)<\/button>/gi)].slice(0, 10).map(m => m[1].trim()).filter(b => b.length < 30);
+      pageData.links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([^<]+)<\/a>/gi)].slice(0, 5).map(m => m[2].trim()).filter(l => l.length < 30);
+      pageData.forms = [...html.matchAll(/<form[^>]*(id|name|action)="([^"]+)"[^>]*>/gi)].slice(0, 5).map(m => m[2]);
+      pageData.fetched = true;
+
       pageAnalysis = `
 ACTUAL PAGE ANALYSIS for ${targetUrl}:
-- Page title: "${title}"
-- Input fields found: ${inputs.map(m => m[2]).join(', ') || 'none detected'}
-- Buttons found: ${buttons.map(m => m[1].trim()).filter(b => b.length < 30).join(', ') || 'none detected'}
-- Key links: ${links.slice(0, 5).map(m => m[2].trim()).filter(l => l.length < 30).join(', ') || 'none detected'}
-- Forms: ${forms.map(m => m[2]).join(', ') || 'none detected'}
+- Page title: "${pageData.title}"
+- Input fields found: ${pageData.inputs.join(', ') || 'none detected'}
+- Buttons found: ${pageData.buttons.join(', ') || 'none detected'}
+- Key links: ${pageData.links.join(', ') || 'none detected'}
+- Forms: ${pageData.forms.join(', ') || 'none detected'}
 
 USE THESE REAL SELECTORS in your page objects. If specific selectors aren't available, use defensive checks like page.title() or page.url.`;
-      
+
       console.log("Page analysis:", pageAnalysis);
     } catch (fetchError) {
       console.log("Could not fetch target page:", fetchError.message);
@@ -525,8 +530,8 @@ ${langPrompt.fileList}
 ALSO REQUIRED:
 - README.md at the project root (path: "") covering, specifically for ${language} + ${framework}:
   1. Title and a one-line description
-  2. Prerequisites (e.g. Python 3.10+, Node 18+, .NET 8 SDK, JDK 17 + Maven — pick what applies)
-  3. Install steps — exact shell commands (e.g. "python -m venv venv && source venv/bin/activate && pip install -r requirements.txt && playwright install chromium" for Python+Playwright; "npm install && npx playwright install" for JS+Playwright; "dotnet restore && dotnet build" plus the playwright.dll install command for C#; "mvn install" plus mvn exec for Java)
+  2. Prerequisites (e.g. Python 3.10+, Node 18+, .NET 10 SDK + PowerShell Core (pwsh) for C#, JDK 17 + Maven — pick what applies)
+  3. Install steps — exact shell commands (e.g. "python -m venv venv && source venv/bin/activate && pip install -r requirements.txt && playwright install chromium" for Python+Playwright; "npm install && npx playwright install" for JS+Playwright; for C# use "dotnet restore && dotnet build -c Release" then browser install via "pwsh bin/Release/net10.0/playwright.ps1 install chromium" (Microsoft.Playwright generates playwright.ps1 in the build output, NOT playwright.dll); "mvn install" plus mvn exec for Java)
   4. How to run the tests — the actual command (pytest / npx playwright test / dotnet test / mvn test)
   5. How to switch browser (chromium/firefox/webkit) and toggle headed mode, matching how the generated tests read those options
   6. Project structure — short tree of the generated folders/files
@@ -546,9 +551,8 @@ Use \\n for newlines, \\" for quotes. Output ONLY valid JSON.`;
     const parsed = extractJSON(text);
     
     res.json({
-      content: [{
-        text: JSON.stringify(parsed)
-      }]
+      content: [{ text: JSON.stringify(parsed) }],
+      pageAnalysis: pageData
     });
     
   } catch (error) {
@@ -1233,12 +1237,24 @@ async function runCSharpTests(tempDir, files, selectedBrowser, headed, slowMoMs,
 
   sendEvent('status', `Installing Playwright ${selectedBrowser} browser...`);
 
-  // For .NET Playwright, we need to use the build output's playwright executable
-  // The Microsoft.Playwright NuGet package includes a playwright executable in the build output
-  // We need to run: dotnet exec bin/Release/net8.0/playwright.dll install chromium --with-deps
-  const playwrightDll = join(tempDir, 'bin', 'Release', 'net8.0', 'playwright.dll');
+  // Dynamically find the TFM folder under bin/Release/ (e.g. net10.0, net8.0).
+  // Microsoft.Playwright generates a playwright.ps1 script (not playwright.dll) in the build output.
+  let playwrightPs1;
+  try {
+    const { readdir: rd } = await import('fs/promises');
+    const releaseDir = join(tempDir, 'bin', 'Release');
+    const tfmDirs = await rd(releaseDir);
+    const tfm = tfmDirs.find(d => d.startsWith('net'));
+    if (!tfm) throw new Error('No TFM directory found under bin/Release');
+    playwrightPs1 = join(releaseDir, tfm, 'playwright.ps1');
+    console.log('Playwright ps1 path:', playwrightPs1);
+  } catch (e) {
+    console.log('Could not locate playwright.ps1:', e.message);
+    playwrightPs1 = join(tempDir, 'bin', 'Release', 'net10.0', 'playwright.ps1');
+  }
 
-  const playwrightInstall = spawn('dotnet', ['exec', playwrightDll, 'install', selectedBrowser, '--with-deps'], {
+  const pwsh = process.platform === 'win32' ? 'pwsh.exe' : 'pwsh';
+  const playwrightInstall = spawn(pwsh, [playwrightPs1, 'install', selectedBrowser, '--with-deps'], {
     cwd: tempDir,
     env: { ...process.env }
   });

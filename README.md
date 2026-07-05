@@ -84,7 +84,7 @@ https://github.com/user-attachments/assets/VIDEO_ID_HERE
 
 5. **Open the app**
    
-   Navigate to [http://localhost:3001](http://localhost:3001)
+   Navigate to [http://localhost:3001](http://localhost:3001) — this origin is now whitelisted by default so the backend accepts requests from the Docker-served frontend.
 
 ## Usage
 
@@ -171,6 +171,7 @@ qa-framework-generator/
 | `ANTHROPIC_API_KEY` | Your Anthropic API key | Yes |
 | `PORT` | Server port (default: 3001) | No |
 | `NODE_ENV` | Environment (production/development) | No |
+| `QAFG_ALLOWED_ORIGIN` | Optional extra origin to allow through CORS (default includes http://localhost:5173 and http://localhost:3001) | No |
 
 ## Roadmap
 
@@ -204,7 +205,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Author
 
-**Jim Gray** - QA Engineer with 7 years of automation testing experience
+**Jim Gray** - QA Engineer with 8 years of automation testing experience
 
 - LinkedIn: [Connect with me](https://linkedin.com/in/jgray00)
 
