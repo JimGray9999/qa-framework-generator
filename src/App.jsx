@@ -218,6 +218,7 @@ const QAFrameworkGenerator = () => {
           targetUrl: config.targetUrl,
           provider: settings.provider,
           apiKey: settings.apiKey || undefined,
+          useSkills: settings.useSkills || undefined,
         }),
       });
 
@@ -1147,6 +1148,16 @@ const SettingsModal = ({ settings, providerStatus, onSave, onClose }) => {
             {saveError && <div style={{ marginTop: '8px', fontSize: '0.78rem', color: '#f87171' }}>{saveError}</div>}
           </>
         )}
+
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginTop: '16px', fontSize: '0.8rem', color: '#a1a1aa', lineHeight: 1.5, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={!!draft.useSkills}
+            onChange={(e) => setDraft({ ...draft, useSkills: e.target.checked })}
+            style={{ marginTop: '3px' }}
+          />
+          <span>Use skills for generation (experimental). Loads rules from <code>skills/</code> for languages that have one (Python); others use the built-in prompt.</span>
+        </label>
 
         <div style={{ marginTop: '24px', display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
           <button onClick={onClose} style={{ background: 'transparent', color: '#71717a', border: '1px solid rgba(255,255,255,.12)', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer', fontFamily: "'Inter', sans-serif" }}>Cancel</button>
