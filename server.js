@@ -9,6 +9,7 @@ import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import archiver from "archiver";
 import { generateWithProvider, detectProviders } from "./providers.js";
+import { loadLanguageSkill } from "./skills.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -486,7 +487,7 @@ app.get("/api/providers", async (req, res) => {
 
 app.post("/api/generate", async (req, res) => {
   try {
-    const { language, framework, targetUrl, provider, apiKey } = req.body;
+    const { language, framework, targetUrl, provider, apiKey, useSkills } = req.body;
 
     // Fetch the target page to analyze its structure (SSRF-safe)
     let pageAnalysis = "";
@@ -519,7 +520,12 @@ USE THESE REAL SELECTORS in your page objects. If specific selectors aren't avai
       pageAnalysis = `Could not fetch ${targetUrl} for analysis. Generate defensive tests that check page.title(), page.url, and use generic selectors.`;
     }
 
-    const langPrompt = getLanguagePrompt(language, targetUrl);
+    // Skills (skills/<name>/SKILL.md) replace the inline prompt for migrated languages.
+    // Request flag wins; QAFG_USE_SKILLS=true sets the server default. Falls back if no skill exists.
+    const wantSkills = useSkills ?? (process.env.QAFG_USE_SKILLS === 'true');
+    const skillPrompt = wantSkills ? loadLanguageSkill(language, targetUrl) : null;
+    const langPrompt = skillPrompt || getLanguagePrompt(language, targetUrl);
+    console.log(`Prompt source: ${skillPrompt ? `skill ${skillPrompt.skill}` : 'inline getLanguagePrompt'}`);
 
     const userPrompt = `Generate a ${framework} test framework in ${language} for testing: ${targetUrl}
 
@@ -552,7 +558,8 @@ Use \\n for newlines, \\" for quotes. Output ONLY valid JSON.`;
     
     res.json({
       content: [{ text: JSON.stringify(parsed) }],
-      pageAnalysis: pageData
+      pageAnalysis: pageData,
+      promptSource: skillPrompt ? skillPrompt.skill : 'inline'
     });
     
   } catch (error) {
