@@ -16,6 +16,13 @@ function resolveClaudeBin() {
   return "claude"; // fall back to PATH
 }
 
+// Errors the user can act on (missing key, CLI not installed) are safe to show verbatim.
+function exposed(message) {
+  const err = new Error(message);
+  err.expose = true;
+  return err;
+}
+
 const SYSTEM_PROMPT = `You are a code generation assistant that outputs ONLY valid JSON.
 
 CRITICAL RULES FOR VALID JSON:
@@ -29,21 +36,21 @@ CRITICAL RULES FOR VALID JSON:
 
 Your entire response must be a single valid JSON object, nothing else.`;
 
-async function callAnthropicAPI({ apiKey, userPrompt }) {
+async function callAnthropicAPI({ apiKey, userPrompt, system = SYSTEM_PROMPT }) {
   const key = apiKey || process.env.ANTHROPIC_API_KEY;
-  if (!key) throw new Error("No Anthropic API key provided. Enter one in Settings or choose a different provider.");
+  if (!key) throw exposed("No Anthropic API key provided. Enter one in Settings or choose a different provider.");
   const client = new Anthropic({ apiKey: key });
   const message = await client.messages.create({
     model: "claude-sonnet-4-20250514",
     max_tokens: 8000,
-    system: SYSTEM_PROMPT,
+    system,
     messages: [{ role: "user", content: userPrompt }]
   });
   return message.content[0].text;
 }
 
-async function callOpenAICompatible({ apiKey, userPrompt, model, url, providerLabel }) {
-  if (!apiKey) throw new Error(`No ${providerLabel} API key provided. Enter one in Settings or choose a different provider.`);
+async function callOpenAICompatible({ apiKey, userPrompt, model, url, providerLabel, system = SYSTEM_PROMPT }) {
+  if (!apiKey) throw exposed(`No ${providerLabel} API key provided. Enter one in Settings or choose a different provider.`);
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -54,7 +61,7 @@ async function callOpenAICompatible({ apiKey, userPrompt, model, url, providerLa
       model,
       max_tokens: 8000,
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: system },
         { role: "user", content: userPrompt }
       ]
     })
@@ -67,28 +74,28 @@ async function callOpenAICompatible({ apiKey, userPrompt, model, url, providerLa
   return data.choices?.[0]?.message?.content || "";
 }
 
-async function callOpenAI({ apiKey, userPrompt, model = "gpt-4o" }) {
+async function callOpenAI({ apiKey, userPrompt, model = "gpt-4o", system }) {
   return callOpenAICompatible({
     apiKey: apiKey || process.env.OPENAI_API_KEY,
-    userPrompt, model,
+    userPrompt, model, system,
     url: "https://api.openai.com/v1/chat/completions",
     providerLabel: "OpenAI"
   });
 }
 
-async function callGrok({ apiKey, userPrompt, model = "grok-2-latest" }) {
+async function callGrok({ apiKey, userPrompt, model = "grok-2-latest", system }) {
   return callOpenAICompatible({
     apiKey: apiKey || process.env.XAI_API_KEY || process.env.GROK_API_KEY,
-    userPrompt, model,
+    userPrompt, model, system,
     url: "https://api.x.ai/v1/chat/completions",
     providerLabel: "Grok (xAI)"
   });
 }
 
-async function callPerplexity({ apiKey, userPrompt, model = "sonar-pro" }) {
+async function callPerplexity({ apiKey, userPrompt, model = "sonar-pro", system }) {
   return callOpenAICompatible({
     apiKey: apiKey || process.env.PERPLEXITY_API_KEY,
-    userPrompt, model,
+    userPrompt, model, system,
     url: "https://api.perplexity.ai/chat/completions",
     providerLabel: "Perplexity"
   });
@@ -96,10 +103,10 @@ async function callPerplexity({ apiKey, userPrompt, model = "sonar-pro" }) {
 
 // Calls the locally installed Claude Code CLI (`claude -p`) which uses the user's
 // logged-in session — no API key required.
-async function callClaudeLocal({ userPrompt }) {
+async function callClaudeLocal({ userPrompt, system = SYSTEM_PROMPT }) {
   const claudeBin = resolveClaudeBin();
   return await new Promise((resolve, reject) => {
-    const fullPrompt = `${SYSTEM_PROMPT}\n\n${userPrompt}`;
+    const fullPrompt = `${system}\n\n${userPrompt}`;
     console.log(`[claude-local] using binary: ${claudeBin}`);
     // Strip ANTHROPIC_API_KEY from env so claude uses the subscription login
     // instead of falling back to API-key billing (which may be out of credits).
@@ -116,7 +123,7 @@ async function callClaudeLocal({ userPrompt }) {
     proc.stderr.on("data", (d) => (stderr += d.toString()));
     proc.on("error", (err) => {
       if (err.code === "ENOENT") {
-        reject(new Error("Local Claude CLI not found. Install Claude Code (https://claude.com/claude-code) or pick a different provider."));
+        reject(exposed("Local Claude CLI not found. Install Claude Code (https://claude.com/claude-code) or pick a different provider."));
       } else {
         reject(err);
       }
@@ -133,19 +140,19 @@ async function callClaudeLocal({ userPrompt }) {
   });
 }
 
-export async function generateWithProvider({ provider, apiKey, userPrompt, model }) {
+export async function generateWithProvider({ provider, apiKey, userPrompt, model, system }) {
   switch ((provider || "anthropic-api").toLowerCase()) {
     case "claude-local":
-      return await callClaudeLocal({ userPrompt });
+      return await callClaudeLocal({ userPrompt, system });
     case "openai":
-      return await callOpenAI({ apiKey, userPrompt, model });
+      return await callOpenAI({ apiKey, userPrompt, model, system });
     case "grok":
-      return await callGrok({ apiKey, userPrompt, model });
+      return await callGrok({ apiKey, userPrompt, model, system });
     case "perplexity":
-      return await callPerplexity({ apiKey, userPrompt, model });
+      return await callPerplexity({ apiKey, userPrompt, model, system });
     case "anthropic-api":
     default:
-      return await callAnthropicAPI({ apiKey, userPrompt });
+      return await callAnthropicAPI({ apiKey, userPrompt, system });
   }
 }
 
