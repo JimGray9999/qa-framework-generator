@@ -1,4 +1,4 @@
-import { FRAMEWORKS, VALIDATED, normalizeRequest } from "./catalog.js";
+import { FRAMEWORKS, SUPPORTED, normalizeRequest } from "./catalog.js";
 import { runAgent, str, need } from "./runAgent.js";
 
 const SYSTEM = `You are the Intake Agent of a QA automation framework generator.
@@ -11,16 +11,16 @@ export async function runIntake({ messages, generate, provider, apiKey, onEvent 
     .map((m) => `${m.role === "assistant" ? "AGENT" : "USER"}: ${str(m.content, 1500)}`)
     .join("\n");
 
-  const matrix = Object.entries(FRAMEWORKS).map(([l, f]) => `- ${l}: ${f.join(", ")}`).join("\n");
+  const matrix = Object.keys(FRAMEWORKS).map((l) => `- ${l}: ${[...SUPPORTED].join(", ")}`).join("\n");
 
   const prompt = `Conversation so far:
 ${transcript}
 
 Supported language -> framework options:
 ${matrix}
-Only "${[...VALIDATED].join(", ")}" is validated end to end; the others are experimental. If the user picks an experimental one, still accept it but mention that in "reply".
+Only ${[...SUPPORTED].join(", ")} is implemented. If the user asks for any other framework (Selenium, Cypress, WebdriverIO, TestNG, JUnit, Cucumber, pytest-bdd, ...), do NOT accept it: say it is not supported yet, offer ${[...SUPPORTED].join(", ")} instead, and return status "needs_info".
 
-Defaults you may apply and must state in "reply": framework "playwright" if unspecified; language "python" only if the user clearly does not care.
+Defaults you may apply and must state in "reply": framework "playwright" if unspecified (the only option); language "python" only if the user clearly does not care.
 The target URL is required. Never invent one. If it is missing, or the language is ambiguous, ask ONE question and return status "needs_info".
 "focus" is a short list of user priorities (e.g. "login flow", "checkout"); empty if none.
 

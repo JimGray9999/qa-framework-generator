@@ -1,5 +1,8 @@
-// Single source of truth for what the pipeline will accept. Mirrors the UI's
-// language/framework matrix. Only Playwright is validated end to end.
+// Single source of truth for what the pipeline will accept.
+// FRAMEWORKS mirrors the UI's language/framework matrix so we can recognize a request,
+// but getLanguagePrompt() only has Playwright templates. Anything outside SUPPORTED is
+// rejected until matching templates exist (otherwise e.g. Python + Selenium would be
+// told to generate pytest-playwright).
 export const FRAMEWORKS = {
   python: ["playwright", "selenium", "pytest-bdd"],
   java: ["playwright", "testng", "junit", "cucumber"],
@@ -8,7 +11,7 @@ export const FRAMEWORKS = {
   "c#": ["playwright", "selenium", "cypress"],
 };
 
-export const VALIDATED = new Set(["playwright"]);
+export const SUPPORTED = new Set(["playwright"]);
 
 // Canonical display value used by the rest of the app ("C#" is mixed case there).
 export const displayLanguage = (l) => (l === "c#" ? "C#" : l);
@@ -19,6 +22,9 @@ export function normalizeRequest(raw) {
   if (!FRAMEWORKS[language]) throw agentError(`Unsupported language "${raw?.language}".`);
   if (!FRAMEWORKS[language].includes(framework)) {
     throw agentError(`"${framework}" is not available for ${language}. Options: ${FRAMEWORKS[language].join(", ")}.`);
+  }
+  if (!SUPPORTED.has(framework)) {
+    throw agentError(`${framework} is not supported by the agent pipeline yet. Only ${[...SUPPORTED].join(", ")} is currently implemented.`);
   }
   let url;
   try {
