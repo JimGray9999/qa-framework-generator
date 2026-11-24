@@ -9,6 +9,7 @@ import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import archiver from "archiver";
 import { generateWithProvider, detectProviders } from "./providers.js";
+import { rateLimit } from "./middleware/rateLimit.js";
 import { extractJSON } from "./agents/json.js";
 import { normalizeRequest } from "./agents/catalog.js";
 import { runIntake } from "./agents/intake.js";
@@ -543,6 +544,14 @@ Use \\n for newlines, \\" for quotes. Output ONLY valid JSON.`;
 // Automation Engineer. The endpoints are stateless: the client holds each agent's
 // artifact, which is what lets the user review/edit the plan and architecture
 // between steps (human-in-the-loop gates).
+// Each call is a paid/slow model request, so cap them per client. A full pipeline run
+// is 4 calls (plus regenerations); the default leaves comfortable headroom.
+app.use('/api/agents', rateLimit({
+  windowMs: parseInt(process.env.QAFG_AGENT_RATE_WINDOW_MS || '60000', 10),
+  max: parseInt(process.env.QAFG_AGENT_RATE_MAX || '15', 10),
+  message: 'Too many agent requests. Wait a moment and try again.',
+}));
+
 const agentDeps = (body) => ({
   generate: generateWithProvider,
   provider: body.provider,

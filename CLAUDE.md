@@ -177,7 +177,7 @@ Items completed are on `sec/auth-and-path-traversal` (PR open). Items below are 
 |----|----------|------|
 | C3 | Critical | **Sandbox test execution** — run each language subprocess in a Docker container (`--network=none` for test phase, network only for install/browser-download phase). Blocks true public deployment. |
 | H3 | High | **API key storage** — move from `localStorage` to `sessionStorage`; warn user if page is not on `localhost`; scrub key from state on modal close without save. |
-| H4 | High | **Rate limiting** — add `express-rate-limit` to `/api/generate` (expensive AI call) and `/api/run-tests` (RCE surface). |
+| H4 | High | **Rate limiting** — done for `/api/agents/*` (in-house `middleware/rateLimit.js`, env `QAFG_AGENT_RATE_MAX`/`QAFG_AGENT_RATE_WINDOW_MS`). Still to do: `/api/generate` and `/api/run-tests` (RCE surface). |
 | M1 | Medium | **Helmet** — add `helmet()` middleware with a strict CSP for production builds. |
 | M5 | Medium | **Error message sanitisation** — audit all remaining `res.status(500).json({ error: error.message })` calls and replace with generic messages; log real errors server-side only. |
 | M6 | Medium | **Debug log cleanup** — gate `console.log("Anthropic API key: ✓ loaded")` and similar startup logs behind `DEBUG=qafg:*`. |
