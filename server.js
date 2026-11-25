@@ -571,7 +571,7 @@ function agentRoute(handler) {
     try {
       res.json(await handler(req.body || {}));
     } catch (error) {
-      console.error(`[${req.path}]`, error);
+      console.error('[%s]', req.path, error);
       // Only deliberately user-facing errors are echoed; everything else stays generic.
       res.status(error.expose ? 400 : 500).json({ error: error.expose ? error.message : 'Agent failed. Check server logs.' });
     }
