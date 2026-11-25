@@ -10,6 +10,13 @@ import dotenv from "dotenv";
 import archiver from "archiver";
 import { generateWithProvider, detectProviders } from "./providers.js";
 import { loadLanguageSkill } from "./skills.js";
+import { rateLimit } from "./middleware/rateLimit.js";
+import { extractJSON } from "./agents/json.js";
+import { normalizeRequest } from "./agents/catalog.js";
+import { runIntake } from "./agents/intake.js";
+import { runTestPlanner } from "./agents/testPlanner.js";
+import { runArchitect, validateArchitecture } from "./agents/architect.js";
+import { runEngineer } from "./agents/engineer.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -435,45 +442,45 @@ function getLanguagePrompt(language, targetUrl) {
   };
 }
 
-// Helper to extract and validate JSON from Claude's response
-function extractJSON(text) {
-  // Try to find JSON in code fences first
-  const codeBlockMatch = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-  if (codeBlockMatch) {
-    try {
-      return JSON.parse(codeBlockMatch[1]);
-    } catch (e) {
-      console.log("Code block parse failed:", e.message);
-    }
-  }
+// Fetch the target page and extract real selectors (SSRF-safe). Results are cached
+// briefly so the multi-agent pipeline analyzes the site once, server-side, rather
+// than trusting page data sent back by the client.
+const ANALYSIS_TTL_MS = 5 * 60 * 1000;
+const analysisCache = new Map();
 
-  // Try to find raw JSON object
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new Error("No JSON object found in response");
-  }
+async function analyzePage(targetUrl) {
+  const cached = analysisCache.get(targetUrl);
+  if (cached && Date.now() - cached.at < ANALYSIS_TTL_MS) return cached.value;
 
-  let jsonStr = jsonMatch[0];
-
-  // Try direct parse
+  let pageAnalysis = "";
+  const pageData = { fetched: false, title: '', inputs: [], buttons: [], links: [], forms: [] };
   try {
-    return JSON.parse(jsonStr);
-  } catch (e) {
-    console.log("Direct parse failed, attempting cleanup...");
+    const html = await fetchPageSafely(targetUrl);
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    pageData.title = titleMatch ? titleMatch[1].trim() : '';
+    pageData.inputs = [...html.matchAll(/<input[^>]*(id|name|placeholder|aria-label)="([^"]+)"[^>]*>/gi)].slice(0, 10).map(m => m[2]);
+    pageData.buttons = [...html.matchAll(/<button[^>]*>([^<]+)<\/button>/gi)].slice(0, 10).map(m => m[1].trim()).filter(b => b.length < 30);
+    pageData.links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([^<]+)<\/a>/gi)].slice(0, 5).map(m => m[2].trim()).filter(l => l.length < 30);
+    pageData.forms = [...html.matchAll(/<form[^>]*(id|name|action)="([^"]+)"[^>]*>/gi)].slice(0, 5).map(m => m[2]);
+    pageData.fetched = true;
 
-    // Try to clean up common issues
-    // Remove trailing commas
-    jsonStr = jsonStr.replace(/,(\s*[}\]])/g, '$1');
+    pageAnalysis = `
+ACTUAL PAGE ANALYSIS for ${targetUrl}:
+- Page title: "${pageData.title}"
+- Input fields found: ${pageData.inputs.join(', ') || 'none detected'}
+- Buttons found: ${pageData.buttons.join(', ') || 'none detected'}
+- Key links: ${pageData.links.join(', ') || 'none detected'}
+- Forms: ${pageData.forms.join(', ') || 'none detected'}
 
-    try {
-      return JSON.parse(jsonStr);
-    } catch (e2) {
-      console.log("Cleanup parse failed:", e2.message);
-      console.log("JSON string (first 500 chars):", jsonStr.substring(0, 500));
-    }
+USE THESE REAL SELECTORS in your page objects. If specific selectors aren't available, use defensive checks like page.title() or page.url.`;
+  } catch (fetchError) {
+    console.log("Could not fetch target page:", fetchError.message);
+    pageAnalysis = `Could not fetch ${targetUrl} for analysis. Generate defensive tests that check page.title(), page.url, and use generic selectors.`;
   }
 
-  throw new Error("Failed to parse JSON from Claude response");
+  const value = { pageData, pageAnalysis };
+  analysisCache.set(targetUrl, { at: Date.now(), value });
+  return value;
 }
 
 app.get("/api/providers", async (req, res) => {
@@ -489,36 +496,7 @@ app.post("/api/generate", async (req, res) => {
   try {
     const { language, framework, targetUrl, provider, apiKey, useSkills } = req.body;
 
-    // Fetch the target page to analyze its structure (SSRF-safe)
-    let pageAnalysis = "";
-    let pageData = { fetched: false, title: '', inputs: [], buttons: [], links: [], forms: [] };
-    try {
-      const html = await fetchPageSafely(targetUrl);
-
-      // Extract useful selectors from the HTML (limit size for Claude)
-      const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-      pageData.title = titleMatch ? titleMatch[1].trim() : '';
-      pageData.inputs = [...html.matchAll(/<input[^>]*(id|name|placeholder|aria-label)="([^"]+)"[^>]*>/gi)].slice(0, 10).map(m => m[2]);
-      pageData.buttons = [...html.matchAll(/<button[^>]*>([^<]+)<\/button>/gi)].slice(0, 10).map(m => m[1].trim()).filter(b => b.length < 30);
-      pageData.links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([^<]+)<\/a>/gi)].slice(0, 5).map(m => m[2].trim()).filter(l => l.length < 30);
-      pageData.forms = [...html.matchAll(/<form[^>]*(id|name|action)="([^"]+)"[^>]*>/gi)].slice(0, 5).map(m => m[2]);
-      pageData.fetched = true;
-
-      pageAnalysis = `
-ACTUAL PAGE ANALYSIS for ${targetUrl}:
-- Page title: "${pageData.title}"
-- Input fields found: ${pageData.inputs.join(', ') || 'none detected'}
-- Buttons found: ${pageData.buttons.join(', ') || 'none detected'}
-- Key links: ${pageData.links.join(', ') || 'none detected'}
-- Forms: ${pageData.forms.join(', ') || 'none detected'}
-
-USE THESE REAL SELECTORS in your page objects. If specific selectors aren't available, use defensive checks like page.title() or page.url.`;
-
-      console.log("Page analysis:", pageAnalysis);
-    } catch (fetchError) {
-      console.log("Could not fetch target page:", fetchError.message);
-      pageAnalysis = `Could not fetch ${targetUrl} for analysis. Generate defensive tests that check page.title(), page.url, and use generic selectors.`;
-    }
+    const { pageData, pageAnalysis } = await analyzePage(targetUrl);
 
     // Skills (skills/<name>/SKILL.md) replace the inline prompt for migrated languages.
     // Request flag wins; QAFG_USE_SKILLS=true sets the server default. Falls back if no skill exists.
@@ -567,6 +545,90 @@ Use \\n for newlines, \\" for quotes. Output ONLY valid JSON.`;
     res.status(500).json({ error: error.message });
   }
 });
+
+// --- Multi-agent pipeline ------------------------------------------------------
+// Four single-purpose agents run in sequence: Intake -> Test Planner -> Architect ->
+// Automation Engineer. The endpoints are stateless: the client holds each agent's
+// artifact, which is what lets the user review/edit the plan and architecture
+// between steps (human-in-the-loop gates).
+// Each call is a paid/slow model request, so cap them per client. A full pipeline run
+// is 4 calls (plus regenerations); the default leaves comfortable headroom.
+app.use('/api/agents', rateLimit({
+  windowMs: parseInt(process.env.QAFG_AGENT_RATE_WINDOW_MS || '60000', 10),
+  max: parseInt(process.env.QAFG_AGENT_RATE_MAX || '15', 10),
+  message: 'Too many agent requests. Wait a moment and try again.',
+}));
+
+const agentDeps = (body) => ({
+  generate: generateWithProvider,
+  provider: body.provider,
+  apiKey: body.apiKey,
+  onEvent: (e) => console.log(`[agent:${e.agent}] attempt ${e.attempt} ${e.ok ? 'ok' : 'rejected: ' + e.error}`),
+});
+
+function agentRoute(handler) {
+  return async (req, res) => {
+    try {
+      res.json(await handler(req.body || {}));
+    } catch (error) {
+      console.error(`[${req.path}]`, error);
+      // Only deliberately user-facing errors are echoed; everything else stays generic.
+      res.status(error.expose ? 400 : 500).json({ error: error.expose ? error.message : 'Agent failed. Check server logs.' });
+    }
+  };
+}
+
+app.post('/api/agents/intake', agentRoute(async (body) => {
+  const messages = Array.isArray(body.messages) ? body.messages.filter(m => m && typeof m.content === 'string') : [];
+  if (!messages.length) throw Object.assign(new Error('A message is required.'), { expose: true });
+  return runIntake({ messages, ...agentDeps(body) });
+}));
+
+app.post('/api/agents/plan', agentRoute(async (body) => {
+  const request = normalizeRequest(body.request);
+  const { pageData, pageAnalysis } = await analyzePage(request.targetUrl);
+  const testPlan = await runTestPlanner({ request, pageAnalysis, ...agentDeps(body) });
+  return { request, testPlan, pageAnalysis: pageData };
+}));
+
+app.post('/api/agents/architect', agentRoute(async (body) => {
+  const request = normalizeRequest(body.request);
+  const testPlan = validateApprovedPlan(body.testPlan);
+  const { pageAnalysis } = await analyzePage(request.targetUrl);
+  const requiredFiles = getLanguagePrompt(request.language, request.targetUrl).fileList;
+  const architecture = await runArchitect({ request, testPlan, pageAnalysis, requiredFiles, ...agentDeps(body) });
+  return { architecture };
+}));
+
+app.post('/api/agents/engineer', agentRoute(async (body) => {
+  const request = normalizeRequest(body.request);
+  const testPlan = validateApprovedPlan(body.testPlan);
+  let architecture;
+  try {
+    architecture = validateArchitecture(body.architecture || {}, testPlan);
+  } catch (e) {
+    throw Object.assign(new Error(`Invalid architecture: ${e.message}`), { expose: true });
+  }
+  const { pageAnalysis } = await analyzePage(request.targetUrl);
+  const langPrompt = getLanguagePrompt(request.language, request.targetUrl);
+  const result = await runEngineer({ request, testPlan, architecture, pageAnalysis, langPrompt, ...agentDeps(body) });
+  return { content: [{ text: JSON.stringify({ files: result.files, summary: result.summary }) }], warnings: result.warnings };
+}));
+
+// The plan comes back from the client (possibly user-edited), so re-validate its shape
+// and cap its size before it is placed into a prompt.
+function validateApprovedPlan(plan) {
+  const scenarios = (Array.isArray(plan?.scenarios) ? plan.scenarios : []).slice(0, 8).map((s, i) => ({
+    id: String(s.id || `TC-${i + 1}`).slice(0, 20),
+    title: String(s.title || '').slice(0, 200),
+    priority: ['P0', 'P1', 'P2'].includes(s.priority) ? s.priority : 'P1',
+    type: String(s.type || 'functional').slice(0, 30),
+    steps: (Array.isArray(s.steps) ? s.steps : []).slice(0, 10).map(x => String(x).slice(0, 300)),
+    expected: String(s.expected || '').slice(0, 400),
+  })).filter(s => s.title);
+  if (!scenarios.length) throw Object.assign(new Error('The test plan needs at least one scenario.'), { expose: true });
+  return { summary: String(plan.summary || '').slice(0, 600), risks: [], scenarios, outOfScope: [] };
+}
 
 // Detect Python command (Docker uses 'python'/'pip', macOS uses 'python3'/'pip3')
 const isDocker = process.env.NODE_ENV === 'production' || process.env.DOCKER === 'true';

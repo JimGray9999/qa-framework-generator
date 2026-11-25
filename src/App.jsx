@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useFrameworkStorage } from './useFrameworkStorage';
+import AgentPipeline from './AgentPipeline';
 
 const loadSettings = () => {
   try {
@@ -17,6 +18,13 @@ const IconGrid = () => (
     <rect x="14" y="3" width="7" height="7" rx="1.5"/>
     <rect x="3" y="14" width="7" height="7" rx="1.5"/>
     <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+  </svg>
+);
+
+const IconAgents = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/>
+    <path d="M7 6h10M6 8l5 8M18 8l-5 8"/>
   </svg>
 );
 
@@ -171,7 +179,7 @@ const QAFrameworkGenerator = () => {
   const [testStatus, setTestStatus] = useState(null);
   const [testReport, setTestReport] = useState(null);
   const [expandedTests, setExpandedTests] = useState({});
-  const [activeTab, setActiveTab] = useState('config');
+  const [activeTab, setActiveTab] = useState('agents');
 
   const { saved, save: saveToLibrary, remove: removeFromLibrary } = useFrameworkStorage();
 
@@ -421,13 +429,32 @@ const QAFrameworkGenerator = () => {
 
   // ─── Nav items ────────────────────────────────────────────────────────────
   const navItems = [
+    { id: 'agents',   label: 'Agents',   icon: <IconAgents /> },
     { id: 'config',   label: 'Config',   icon: <IconGrid /> },
     { id: 'explorer', label: 'Files',    icon: <IconFolder /> },
     { id: 'testrun',  label: 'Tests',    icon: <IconPlay /> },
     { id: 'library',  label: 'Library',  icon: <IconClock /> },
   ];
 
-  const tabLabel = { config: 'Framework Configuration', explorer: 'File Explorer', testrun: 'Test Runner', library: 'Saved Frameworks' };
+  const tabLabel = { agents: 'AI Agent Pipeline', config: 'Framework Configuration', explorer: 'File Explorer', testrun: 'Test Runner', library: 'Saved Frameworks' };
+
+  // Called by the agent pipeline once the Automation Engineer has produced the framework.
+  const handleAgentFramework = (result, request, artifacts) => {
+    setGeneratedFiles(result);
+    setActiveFile(result.files[0]?.name || null);
+    setConfig(prev => ({ ...prev, language: request.language, framework: request.framework, targetUrl: request.targetUrl }));
+    setTestReport(null);
+    setTestOutput([]);
+    setTestStatus(null);
+    setError(null);
+    setAnalysisLog([
+      { time: new Date().toLocaleTimeString(), message: `Agent pipeline: ${artifacts.testPlan.scenarios.length} scenarios planned, ${artifacts.architecture.files.length} files architected` },
+      { time: new Date().toLocaleTimeString(), message: `Generated ${result.files.length} files` },
+    ]);
+    saveToLibrary(result, { ...config, language: request.language, framework: request.framework, targetUrl: request.targetUrl })
+      .then(entry => addLog(`Saved to library as "${entry.name}"`))
+      .catch(() => {});
+  };
 
   const loadFromLibrary = (entry) => {
     setGeneratedFiles({ files: entry.files });
@@ -524,6 +551,16 @@ const QAFrameworkGenerator = () => {
             </button>
           </div>
         </div>
+
+        {/* ── Tab: Agents ── */}
+        {activeTab === 'agents' && (
+          <AgentPipeline
+            apiFetch={apiFetch}
+            settings={settings}
+            onFrameworkReady={handleAgentFramework}
+            onOpenFiles={() => setActiveTab('explorer')}
+          />
+        )}
 
         {/* ── Tab: Config ── */}
         {activeTab === 'config' && (
