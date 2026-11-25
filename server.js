@@ -9,6 +9,7 @@ import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import archiver from "archiver";
 import { generateWithProvider, detectProviders } from "./providers.js";
+import { loadLanguageSkill } from "./skills.js";
 import { rateLimit } from "./middleware/rateLimit.js";
 import { extractJSON } from "./agents/json.js";
 import { normalizeRequest } from "./agents/catalog.js";
@@ -493,11 +494,16 @@ app.get("/api/providers", async (req, res) => {
 
 app.post("/api/generate", async (req, res) => {
   try {
-    const { language, framework, targetUrl, provider, apiKey } = req.body;
+    const { language, framework, targetUrl, provider, apiKey, useSkills } = req.body;
 
     const { pageData, pageAnalysis } = await analyzePage(targetUrl);
 
-    const langPrompt = getLanguagePrompt(language, targetUrl);
+    // Skills (skills/<name>/SKILL.md) replace the inline prompt for migrated languages.
+    // Request flag wins; QAFG_USE_SKILLS=true sets the server default. Falls back if no skill exists.
+    const wantSkills = useSkills ?? (process.env.QAFG_USE_SKILLS === 'true');
+    const skillPrompt = wantSkills ? loadLanguageSkill(language, targetUrl) : null;
+    const langPrompt = skillPrompt || getLanguagePrompt(language, targetUrl);
+    console.log(`Prompt source: ${skillPrompt ? `skill ${skillPrompt.skill}` : 'inline getLanguagePrompt'}`);
 
     const userPrompt = `Generate a ${framework} test framework in ${language} for testing: ${targetUrl}
 
@@ -530,7 +536,8 @@ Use \\n for newlines, \\" for quotes. Output ONLY valid JSON.`;
     
     res.json({
       content: [{ text: JSON.stringify(parsed) }],
-      pageAnalysis: pageData
+      pageAnalysis: pageData,
+      promptSource: skillPrompt ? skillPrompt.skill : 'inline'
     });
     
   } catch (error) {
@@ -564,7 +571,7 @@ function agentRoute(handler) {
     try {
       res.json(await handler(req.body || {}));
     } catch (error) {
-      console.error(`[${req.path}]`, error);
+      console.error('[%s]', req.path, error);
       // Only deliberately user-facing errors are echoed; everything else stays generic.
       res.status(error.expose ? 400 : 500).json({ error: error.expose ? error.message : 'Agent failed. Check server logs.' });
     }

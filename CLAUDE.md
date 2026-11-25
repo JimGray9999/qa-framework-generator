@@ -39,6 +39,17 @@ Key implementation details:
 
 ---
 
+## Skills (experimental)
+
+Generation prompts are being migrated from `getLanguagePrompt()` in `server.js` to
+skills under `skills/<name>/SKILL.md`. `skills.js` loads a language skill (`## Files`
+and `## Rules` sections, `{{targetUrl}}` placeholder) and appends `skills/qa-conventions`.
+Python (`qa-playwright-python`) is migrated; other languages fall back to the inline prompt.
+Enable via the Settings checkbox (`useSkills` in the `/api/generate` body) or `QAFG_USE_SKILLS=true`.
+The response includes `promptSource` so runs can be compared.
+
+---
+
 ## HTTP API
 
 | Endpoint | Purpose |
