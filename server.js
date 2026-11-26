@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import { spawn } from "child_process";
+import { spawn, killTree, runWithDeadline } from "./processScope.js";
 import { mkdtemp, writeFile, mkdir, readFile, rm } from "fs/promises";
 import { join, dirname, resolve, sep } from "path";
 import { randomBytes } from "crypto";
@@ -126,12 +126,15 @@ const TEST_TIMEOUT_MS = parseInt(process.env.QAFG_TEST_TIMEOUT_MS || '600000', 1
 
 function runWithTimeout(proc, timeoutMs = TEST_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
+    let timedOut = false;
     const timer = setTimeout(() => {
-      try { proc.kill('SIGKILL'); } catch {}
-      reject(new Error(`Process timed out after ${Math.round(timeoutMs / 1000)}s`));
+      timedOut = true;
+      // Kill the whole process tree and wait for it to be reaped before reporting the
+      // timeout, so callers (and the run slot) never proceed while it is still running.
+      killTree(proc).then(() => reject(new Error(`Process timed out after ${Math.round(timeoutMs / 1000)}s`)));
     }, timeoutMs);
 
-    proc.on('close', (code) => { clearTimeout(timer); resolve(code); });
+    proc.on('close', (code) => { if (timedOut) return; clearTimeout(timer); resolve(code); });
     proc.on('error', (err) => { clearTimeout(timer); reject(err); });
   });
 }
@@ -768,6 +771,10 @@ function detectLanguage(files) {
 // minute would otherwise pile up dozens of browsers and package installs.
 const testRunGate = createConcurrencyGate(envInt('QAFG_MAX_CONCURRENT_RUNS', 2));
 
+// Upper bound on a whole run (dependency install, browser download, build AND tests).
+// QAFG_TEST_TIMEOUT_MS only covers the final test process; setup phases had no limit.
+const RUN_DEADLINE_MS = envInt('QAFG_RUN_TIMEOUT_MS', 20 * 60 * 1000, { max: MAX_TIMER_MS });
+
 // Run tests endpoint
 app.post("/api/run-tests", async (req, res) => {
   const { files, browser = 'chromium', headed = false, slowMo = 0 } = req.body;
@@ -854,6 +861,9 @@ app.post("/api/run-tests", async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
 
     const sendEvent = (type, data) => {
+      // A cancelled run's code can keep going briefly; never write to a closed response
+      // (that would emit an unhandled 'error' on it).
+      if (res.writableEnded || res.destroyed) return;
       // Annotate report payloads with the browser + headed mode so the UI can show them
       if (type === 'report' && data && typeof data === 'object') {
         data = { ...data, browser: selectedBrowser, headed, slowMo: slowMoMs };
@@ -861,29 +871,34 @@ app.post("/api/run-tests", async (req, res) => {
       res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
     };
 
-    // Route to appropriate language handler
-    if (language === 'csharp') {
-      console.log("Routing to C# test execution");
-      await runCSharpTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
-    } else if (language === 'javascript' || language === 'typescript') {
-      console.log(`Routing to ${language} test execution`);
-      await runJavaScriptTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
-    } else if (language === 'java') {
-      console.log("Routing to Java test execution");
-      await runJavaTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
-    } else {
-      console.log("Routing to Python test execution");
-      await runPythonTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
-    }
+    // Route to the language handler under one deadline. runWithDeadline kills and reaps
+    // every subprocess the run started before it settles, whatever the outcome.
+    await runWithDeadline(async () => {
+      if (language === 'csharp') {
+        console.log("Routing to C# test execution");
+        await runCSharpTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
+      } else if (language === 'javascript' || language === 'typescript') {
+        console.log(`Routing to ${language} test execution`);
+        await runJavaScriptTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
+      } else if (language === 'java') {
+        console.log("Routing to Java test execution");
+        await runJavaTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
+      } else {
+        console.log("Routing to Python test execution");
+        await runPythonTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
+      }
+    }, RUN_DEADLINE_MS);
 
     res.end();
 
   } catch (error) {
     console.error("Run tests error:", error);
+    // Our own deadline message is safe to show; anything else stays generic.
+    const message = error.code === 'RUN_DEADLINE' ? error.message : 'Test run failed';
     if (!res.headersSent) {
-      res.status(500).json({ error: 'Test run failed' });
-    } else {
-      res.write(`data: ${JSON.stringify({ type: 'error', data: 'Test run failed' })}\n\n`);
+      res.status(500).json({ error: message });
+    } else if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify({ type: 'error', data: message })}\n\n`);
       res.end();
     }
   } finally {
