@@ -52,8 +52,14 @@ Use \\n for newlines, \\" for quotes. Output ONLY valid JSON.`;
     apiKey,
     onEvent,
     validate: (o) => {
-      const out = asArray(o.files).map((f) => ({ name: str(f.name, 160), path: str(f.path, 300), content: typeof f.content === "string" ? f.content : "" }));
-      need(out.length >= 3 && out.every((f) => f.name && f.content), "files must be a non-empty list of {name, path, content}");
+      const raw = asArray(o.files);
+      need(raw.length >= 3, `expected at least 3 files, got ${raw.length}`);
+      const out = raw.map((f, i) => {
+        need(f && typeof f.name === "string" && f.name.trim(), `file #${i + 1} has no "name"`);
+        // Empty content is legitimate (e.g. an empty pages/__init__.py), but it must be a string.
+        need(typeof f.content === "string", `file "${f.name}" has no string "content"`);
+        return { name: str(f.name, 160), path: str(f.path, 300), content: f.content };
+      });
       return { files: out, summary: str(o.summary, 1000) };
     },
   });
