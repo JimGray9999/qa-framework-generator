@@ -86,7 +86,13 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
     try {
       const data = await post('/api/agents/intake', { messages: next.slice(1) });
       setMessages(m => [...m, { role: 'assistant', content: data.reply }]);
-      if (data.status === 'ready') { setBusy(false); await runPlanner(data.request); }
+      if (data.status === 'ready') {
+        // Save the request first so the Intake card is available while planning runs
+        // (and stays available if planning fails).
+        setRequest(data.request);
+        setBusy(false);
+        await runPlanner(data.request);
+      }
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
   };
