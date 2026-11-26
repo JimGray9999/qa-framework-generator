@@ -83,6 +83,25 @@ app.get('/api/session', (req, res) => {
   res.json({ token: AUTH_TOKEN });
 });
 
+// --- Rate limiting -------------------------------------------------------------
+// Registered after the auth middleware so unauthenticated requests never consume a
+// client's quota. Each limiter has its own bucket. /api/run-tests is stricter because
+// it executes generated code and runs for minutes; /api/generate and /api/agents/*
+// are paid/slow model calls. All values are overridable via env.
+const envInt = (name, fallback) => parseInt(process.env[name] || String(fallback), 10);
+
+app.use('/api/generate', rateLimit({
+  windowMs: envInt('QAFG_GENERATE_RATE_WINDOW_MS', 60000),
+  max: envInt('QAFG_GENERATE_RATE_MAX', 10),
+  message: 'Too many generate requests. Wait a moment and try again.',
+}));
+
+app.use('/api/run-tests', rateLimit({
+  windowMs: envInt('QAFG_RUNTESTS_RATE_WINDOW_MS', 60000),
+  max: envInt('QAFG_RUNTESTS_RATE_MAX', 5),
+  message: 'Too many test runs started. Wait a moment and try again.',
+}));
+
 // Serve static frontend files in production
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(join(__dirname, 'dist')));
@@ -554,8 +573,8 @@ Use \\n for newlines, \\" for quotes. Output ONLY valid JSON.`;
 // Each call is a paid/slow model request, so cap them per client. A full pipeline run
 // is 4 calls (plus regenerations); the default leaves comfortable headroom.
 app.use('/api/agents', rateLimit({
-  windowMs: parseInt(process.env.QAFG_AGENT_RATE_WINDOW_MS || '60000', 10),
-  max: parseInt(process.env.QAFG_AGENT_RATE_MAX || '15', 10),
+  windowMs: envInt('QAFG_AGENT_RATE_WINDOW_MS', 60000),
+  max: envInt('QAFG_AGENT_RATE_MAX', 15),
   message: 'Too many agent requests. Wait a moment and try again.',
 }));
 
