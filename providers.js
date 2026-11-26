@@ -1,20 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { spawn } from "child_process";
-import { existsSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
-
-function resolveClaudeBin() {
-  if (process.env.CLAUDE_BIN && existsSync(process.env.CLAUDE_BIN)) return process.env.CLAUDE_BIN;
-  const candidates = [
-    join(homedir(), ".local/bin/claude"),
-    "/opt/homebrew/bin/claude",
-    "/usr/local/bin/claude",
-    join(homedir(), ".claude/local/claude")
-  ];
-  for (const c of candidates) if (existsSync(c)) return c;
-  return "claude"; // fall back to PATH
-}
+import { resolveClaudeBin, spawnClaude } from "./claudeBin.js";
 
 // Errors the user can act on (missing key, CLI not installed) are safe to show verbatim.
 function exposed(message) {
@@ -113,7 +98,7 @@ async function callClaudeLocal({ userPrompt, system = SYSTEM_PROMPT }) {
     const childEnv = { ...process.env };
     delete childEnv.ANTHROPIC_API_KEY;
     delete childEnv.ANTHROPIC_AUTH_TOKEN;
-    const proc = spawn(claudeBin, ["-p", "--output-format", "text"], {
+    const proc = spawnClaude(claudeBin, ["-p", "--output-format", "text"], {
       stdio: ["pipe", "pipe", "pipe"],
       env: childEnv
     });
@@ -123,7 +108,7 @@ async function callClaudeLocal({ userPrompt, system = SYSTEM_PROMPT }) {
     proc.stderr.on("data", (d) => (stderr += d.toString()));
     proc.on("error", (err) => {
       if (err.code === "ENOENT") {
-        reject(exposed("Local Claude CLI not found. Install Claude Code (https://claude.com/claude-code) or pick a different provider."));
+        reject(exposed("Local Claude CLI not found. Install Claude Code (https://claude.com/claude-code), set CLAUDE_BIN to its full path, or pick a different provider."));
       } else {
         reject(err);
       }
@@ -135,6 +120,10 @@ async function callClaudeLocal({ userPrompt, system = SYSTEM_PROMPT }) {
         resolve(stdout);
       }
     });
+    // If the CLI exits immediately (not logged in, bad binary) writing to its stdin raises
+    // EPIPE; swallow it so the "close" handler reports the CLI's real error instead of
+    // the unhandled stream error taking the whole server down.
+    proc.stdin.on("error", () => {});
     proc.stdin.write(fullPrompt);
     proc.stdin.end();
   });
@@ -159,7 +148,7 @@ export async function generateWithProvider({ provider, apiKey, userPrompt, model
 export async function detectProviders() {
   const claudeLocal = await new Promise((resolve) => {
     const bin = resolveClaudeBin();
-    const proc = spawn(bin, ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawnClaude(bin, ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
     proc.on("error", () => resolve(false));
     proc.on("close", (code) => resolve(code === 0));
   });

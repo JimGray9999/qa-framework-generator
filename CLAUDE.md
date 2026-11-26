@@ -33,7 +33,7 @@ and is chosen via the Settings modal (⚙ in the header). Selection persists in
 
 Key implementation details:
 
-- `providers.js` → `resolveClaudeBin()` checks `CLAUDE_BIN`, `~/.local/bin/claude`, Homebrew paths, `~/.claude/local/claude`, then falls back to `PATH`.
+- `claudeBin.js` → `resolveClaudeBin()` checks `CLAUDE_BIN`, then known install paths (`~/.local/bin/claude`, Homebrew, `~/.claude/local/claude`; on Windows `claude.exe` in `~/.local/bin` and `~/.claude/local`, and `%APPDATA%\npm\claude.cmd`), then searches `PATH` (Windows: `.exe`/`.cmd`/`.bat`), then falls back to bare `claude`. `spawnClaude()` runs `.cmd`/`.bat` wrappers through a shell on Windows.
 - When spawning `claude-local`, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are **stripped from the child env** so Claude Code uses subscription auth instead of paid API-key auth. Don't undo this — it's load-bearing.
 - `GET /api/providers` reports availability (detects the local CLI, flags whether env keys exist) so the UI can disable unavailable options.
 
