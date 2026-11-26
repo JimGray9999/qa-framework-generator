@@ -143,22 +143,34 @@ const QAFrameworkGenerator = () => {
   const [settings, setSettings] = useState(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
   const [providerStatus, setProviderStatus] = useState(null);
-  const [sessionToken, setSessionToken] = useState(null);
+  const tokenRef = useRef(null);
 
   const API_BASE = 'http://localhost:3001';
-  const apiFetch = (path, opts = {}) => {
-    const headers = { ...(opts.headers || {}) };
-    if (sessionToken) headers['Authorization'] = `Bearer ${sessionToken}`;
-    return fetch(`${API_BASE}${path}`, { ...opts, headers });
+
+  // The server mints a new bearer token every time it starts. Fetch it lazily, and on
+  // a 401 (server restarted since page load, or it was down when the page loaded)
+  // fetch a fresh one and retry the request once.
+  const fetchToken = async () => {
+    const r = await fetch(`${API_BASE}/api/session`);
+    const d = await r.json();
+    tokenRef.current = d.token;
+    return d.token;
+  };
+
+  const apiFetch = async (path, opts = {}) => {
+    const send = (token) => fetch(`${API_BASE}${path}`, {
+      ...opts,
+      headers: { ...(opts.headers || {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    const used = tokenRef.current ?? await fetchToken().catch(() => null);
+    const res = await send(used);
+    if (res.status !== 401) return res;
+    const fresh = await fetchToken().catch(() => null);
+    return fresh && fresh !== used ? send(fresh) : res;
   };
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/session`)
-      .then(r => r.json())
-      .then(d => {
-        setSessionToken(d.token);
-        return fetch(`${API_BASE}/api/providers`, { headers: { Authorization: `Bearer ${d.token}` } });
-      })
+    apiFetch('/api/providers')
       .then(r => r.json())
       .then(d => setProviderStatus(d.providers))
       .catch(() => {});
