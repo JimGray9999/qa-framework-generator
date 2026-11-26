@@ -3,6 +3,12 @@
 // single-process, localhost-bound server; swap for express-rate-limit + a shared
 // store if it is ever deployed behind multiple instances.
 export function rateLimit({ windowMs = 60_000, max = 15, message = "Too many requests. Please slow down." } = {}) {
+  // Fail loudly on bad options: a NaN max never rejects anything, and an out-of-range
+  // window breaks the cleanup timer.
+  if (!Number.isSafeInteger(max) || max < 1) throw new RangeError(`rateLimit: max must be a positive integer, got ${max}`);
+  if (!Number.isSafeInteger(windowMs) || windowMs < 1 || windowMs > 2147483647) {
+    throw new RangeError(`rateLimit: windowMs must be an integer from 1 to 2147483647, got ${windowMs}`);
+  }
   const hits = new Map(); // key -> { count, resetAt }
 
   const sweep = setInterval(() => {

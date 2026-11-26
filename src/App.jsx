@@ -341,6 +341,12 @@ const QAFrameworkGenerator = () => {
         }),
       });
 
+      // Non-2xx (e.g. 429 rate limited, 401) is a JSON error, not an event stream.
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || `Test run failed to start (${response.status})`);
+      }
+
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
 
