@@ -25,6 +25,11 @@ export async function runAgent({ name, system, prompt, generate, provider, apiKe
 
 export const asArray = (v) => (Array.isArray(v) ? v : []);
 export const str = (v, max = 2000) => (typeof v === "string" ? v.slice(0, max) : "");
+// Model-supplied text goes into server logs and retry prompts via error messages.
+// Strip control characters/newlines (and non-ASCII) and cap the length so it cannot
+// forge log lines or bloat the prompt.
+export const safe = (v, max = 80) => String(v ?? "").replace(/[^\x20-\x7e]/g, "?").slice(0, max);
+
 export function need(cond, message) {
   if (!cond) throw new Error(message);
 }

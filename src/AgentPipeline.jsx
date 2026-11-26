@@ -44,9 +44,12 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
   const [architecture, setArchitecture] = useState(null);
   const [warnings, setWarnings] = useState([]);
   const [result, setResult] = useState(null);
+  const [view, setView] = useState('all'); // 'all' or an agent id: which agent's output to show
   const endRef = useRef(null);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, busy]);
+  // A new stage produces new output, so go back to the full view rather than hide it.
+  useEffect(() => { setView('all'); }, [stage]);
 
   const post = async (path, body) => {
     const res = await apiFetch(path, {
@@ -83,7 +86,13 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
     try {
       const data = await post('/api/agents/intake', { messages: next.slice(1) });
       setMessages(m => [...m, { role: 'assistant', content: data.reply }]);
-      if (data.status === 'ready') { setBusy(false); await runPlanner(data.request); }
+      if (data.status === 'ready') {
+        // Save the request first so the Intake card is available while planning runs
+        // (and stays available if planning fails).
+        setRequest(data.request);
+        setBusy(false);
+        await runPlanner(data.request);
+      }
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
   };
@@ -114,6 +123,9 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
 
   const editScenario = (id, patch) =>
     setTestPlan(p => ({ ...p, scenarios: p.scenarios.map(s => (s.id === id ? { ...s, ...patch } : s)) }));
+
+  const hasOutput = { intake: !!request, planner: !!testPlan, architect: !!architecture, engineer: stage === 'coding' || !!result };
+  const show = (id) => view === 'all' || view === id;
 
   const active = STAGE_AGENT[stage];
   const agentState = (i) => (i < active ? 'done' : i > active ? 'idle' : stage === 'done' ? 'done' : WORKING.has(stage) ? 'working' : GATES.has(stage) ? 'review' : 'active');
@@ -169,18 +181,40 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
           {AGENTS.map((a, i) => {
             const st = agentState(i);
             const color = st === 'done' ? '#4ade80' : st === 'review' ? '#fbbf24' : st === 'working' || st === 'active' ? '#a5b4fc' : '#3f3f46';
+            const clickable = hasOutput[a.id];
+            const selected = view === a.id;
             return (
-              <div key={a.id} style={{ ...card, flex: 1, padding: '12px 14px', borderColor: st === 'idle' ? 'rgba(255,255,255,.05)' : color + '55' }}>
+              <button
+                key={a.id}
+                type="button"
+                disabled={!clickable}
+                aria-pressed={selected}
+                title={clickable ? (selected ? 'Click to show all agents' : `Show only ${a.name} output`) : 'No output yet'}
+                onClick={() => setView(v => (v === a.id ? 'all' : a.id))}
+                style={{
+                  ...card, flex: 1, padding: '12px 14px', textAlign: 'left', font: 'inherit', color: 'inherit',
+                  cursor: clickable ? 'pointer' : 'default',
+                  borderColor: selected ? color : st === 'idle' ? 'rgba(255,255,255,.05)' : color + '55',
+                  background: selected ? 'rgba(99,102,241,.12)' : card.background,
+                }}
+              >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 10, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color }}>
                   {st === 'working' ? <Spinner /> : <span style={{ width: 8, height: 8, borderRadius: '50%', background: color }} />}
                   {st === 'review' ? 'Awaiting you' : st === 'idle' ? 'Waiting' : st === 'done' ? 'Done' : st === 'working' ? 'Working' : 'Active'}
                 </div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: '#e4e4e7', marginTop: 6 }}>{a.name}</div>
                 <div style={{ fontSize: 11, color: '#52525b', marginTop: 2 }}>{a.role}</div>
-              </div>
+              </button>
             );
           })}
         </div>
+
+        {view !== 'all' && (
+          <div style={{ fontSize: 12, color: '#71717a', margin: '-8px 0 14px' }}>
+            Showing {AGENTS.find(a => a.id === view)?.name} output only.{' '}
+            <button type="button" onClick={() => setView('all')} style={{ background: 'none', border: 'none', padding: 0, color: '#a5b4fc', cursor: 'pointer', font: 'inherit', textDecoration: 'underline' }}>Show all</button>
+          </div>
+        )}
 
         {error && (
           <div style={{ ...card, padding: '10px 14px', marginBottom: 16, borderColor: 'rgba(248,113,113,.35)', color: '#fca5a5', fontSize: 12.5 }}>{error}</div>
@@ -192,8 +226,20 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
           </div>
         )}
 
+        {/* Intake output */}
+        {show('intake') && request && (
+          <section style={{ ...card, padding: 20, marginBottom: 16 }}>
+            <h3 style={{ margin: '0 0 10px', fontSize: 13, color: '#f4f4f5' }}>Request (from Intake)</h3>
+            <div style={{ fontSize: 12.5, color: '#a1a1aa', lineHeight: 1.8 }}>
+              <div><span style={{ color: '#52525b' }}>Stack:</span> {request.language} + {request.framework}</div>
+              <div><span style={{ color: '#52525b' }}>Target:</span> <code style={{ color: '#c7d2fe' }}>{request.targetUrl}</code></div>
+              <div><span style={{ color: '#52525b' }}>Focus:</span> {request.focus?.length ? request.focus.join(' · ') : 'none stated'}</div>
+            </div>
+          </section>
+        )}
+
         {/* Test plan */}
-        {testPlan && (
+        {show('planner') && testPlan && (
           <section style={{ ...card, padding: 20, marginBottom: 16 }}>
             <h3 style={{ margin: '0 0 6px', fontSize: 13, color: '#f4f4f5' }}>Test Plan</h3>
             <p style={{ margin: '0 0 14px', fontSize: 12.5, color: '#a1a1aa', lineHeight: 1.5 }}>{testPlan.summary}</p>
@@ -234,7 +280,7 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
         )}
 
         {/* Architecture */}
-        {architecture && (
+        {show('architect') && architecture && (
           <section style={{ ...card, padding: 20, marginBottom: 16 }}>
             <h3 style={{ margin: '0 0 6px', fontSize: 13, color: '#f4f4f5' }}>Framework Architecture</h3>
             <p style={{ margin: '0 0 14px', fontSize: 12.5, color: '#a1a1aa', lineHeight: 1.5 }}>{architecture.approach}</p>
@@ -272,11 +318,11 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
           </section>
         )}
 
-        {stage === 'coding' && (
+        {show('engineer') && stage === 'coding' && (
           <div style={{ ...card, padding: 20, color: '#a5b4fc', fontSize: 13 }}><Spinner /> Automation Engineer is writing the framework. This can take a minute or two.</div>
         )}
 
-        {stage === 'done' && result && (
+        {show('engineer') && stage === 'done' && result && (
           <section style={{ ...card, padding: 20, borderColor: 'rgba(74,222,128,.3)' }}>
             <h3 style={{ margin: '0 0 6px', fontSize: 13, color: '#4ade80' }}>Framework generated: {result.files.length} files</h3>
             <p style={{ margin: '0 0 10px', fontSize: 12.5, color: '#a1a1aa' }}>{result.summary}</p>
