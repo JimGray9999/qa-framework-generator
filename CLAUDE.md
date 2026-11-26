@@ -181,7 +181,7 @@ Items completed are on `sec/auth-and-path-traversal` (PR open). Items below are 
 - [x] **C2** `npm install --ignore-scripts`; static scan (`scanGeneratedFiles`) rejects lifecycle hooks, shell-exec patterns, MSBuild `<Exec>`, curl/wget
 - [x] **M3/M4** Subprocess hard-kill timeout (`runWithTimeout`, 10 min, env-configurable); tempdir `rm -rf` in `finally`
 - [x] **M5 (partial)** Run-tests endpoint now returns generic "Test run failed" instead of raw error message
-- [x] **H4** Rate limiting via in-house `middleware/rateLimit.js` (per-IP fixed window, separate bucket per route group): `/api/agents/*` 15/min, `/api/generate` 10/min, `/api/run-tests` 5/min. Env overrides: `QAFG_{AGENT,GENERATE,RUNTESTS}_RATE_MAX` and `_RATE_WINDOW_MS`. Follow-up: cap *concurrent* test runs (a 10-minute run is not bounded by a per-minute rate).
+- [x] **H4** Rate limiting via in-house `middleware/rateLimit.js` (per-IP fixed window, separate bucket per route group): `/api/agents/*` 15/min, `/api/generate` 10/min, `/api/run-tests` 5/min. Env overrides: `QAFG_{AGENT,GENERATE,RUNTESTS}_RATE_MAX` and `_RATE_WINDOW_MS` (validated by `config.js`: positive integers, window up to 2^31-1 ms; invalid values warn and fall back to the defaults). Routing is case-sensitive and the limiters sit behind `requireAuth`. Follow-up: cap *concurrent* test runs (a 10-minute run is not bounded by a per-minute rate).
 
 ### 🔲 To do
 

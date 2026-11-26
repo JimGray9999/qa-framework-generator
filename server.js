@@ -11,6 +11,7 @@ import archiver from "archiver";
 import { generateWithProvider, detectProviders } from "./providers.js";
 import { loadLanguageSkill } from "./skills.js";
 import { rateLimit } from "./middleware/rateLimit.js";
+import { envInt, MAX_TIMER_MS } from "./config.js";
 import { extractJSON } from "./agents/json.js";
 import { normalizeRequest } from "./agents/catalog.js";
 import { runIntake } from "./agents/intake.js";
@@ -29,6 +30,11 @@ console.log("Anthropic API key:", process.env.ANTHROPIC_API_KEY ? "✓ loaded fr
 console.log("OpenAI API key:", process.env.OPENAI_API_KEY ? "✓ loaded from env" : "not set (optional)");
 
 const app = express();
+
+// Express matches routes case-insensitively by default, which would let `/API/...`
+// reach a route while the auth check below only looked at lowercase `/api/`.
+// Make routing case-sensitive so every middleware and route agrees on one policy.
+app.set('case sensitive routing', true);
 
 // --- Security: bound origin + auth token -------------------------------------
 // CORS is restricted to the Vite dev origin (and an optional user-specified one).
@@ -70,14 +76,21 @@ const PUBLIC_ROUTES = new Set(['/api/health', '/api/session']);
 
 app.use((req, res, next) => {
   if (PUBLIC_ROUTES.has(req.path)) return next();
-  if (!req.path.startsWith('/api/')) return next();
+  // Fail closed: treat any casing of /api/ as protected, whatever the routing policy.
+  if (!req.path.toLowerCase().startsWith('/api/')) return next();
   const header = req.get('authorization') || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
   if (token !== AUTH_TOKEN) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  req.authenticated = true;
   next();
 });
+
+// Explicit prerequisite for anything mounted behind it: only a request that passed the
+// token check above can reach (and consume quota from) a rate limiter.
+const requireAuth = (req, res, next) =>
+  req.authenticated ? next() : res.status(401).json({ error: 'Unauthorized' });
 
 app.get('/api/session', (req, res) => {
   res.json({ token: AUTH_TOKEN });
@@ -88,16 +101,14 @@ app.get('/api/session', (req, res) => {
 // client's quota. Each limiter has its own bucket. /api/run-tests is stricter because
 // it executes generated code and runs for minutes; /api/generate and /api/agents/*
 // are paid/slow model calls. All values are overridable via env.
-const envInt = (name, fallback) => parseInt(process.env[name] || String(fallback), 10);
-
-app.use('/api/generate', rateLimit({
-  windowMs: envInt('QAFG_GENERATE_RATE_WINDOW_MS', 60000),
+app.use('/api/generate', requireAuth, rateLimit({
+  windowMs: envInt('QAFG_GENERATE_RATE_WINDOW_MS', 60000, { max: MAX_TIMER_MS }),
   max: envInt('QAFG_GENERATE_RATE_MAX', 10),
   message: 'Too many generate requests. Wait a moment and try again.',
 }));
 
-app.use('/api/run-tests', rateLimit({
-  windowMs: envInt('QAFG_RUNTESTS_RATE_WINDOW_MS', 60000),
+app.use('/api/run-tests', requireAuth, rateLimit({
+  windowMs: envInt('QAFG_RUNTESTS_RATE_WINDOW_MS', 60000, { max: MAX_TIMER_MS }),
   max: envInt('QAFG_RUNTESTS_RATE_MAX', 5),
   message: 'Too many test runs started. Wait a moment and try again.',
 }));
@@ -572,8 +583,8 @@ Use \\n for newlines, \\" for quotes. Output ONLY valid JSON.`;
 // between steps (human-in-the-loop gates).
 // Each call is a paid/slow model request, so cap them per client. A full pipeline run
 // is 4 calls (plus regenerations); the default leaves comfortable headroom.
-app.use('/api/agents', rateLimit({
-  windowMs: envInt('QAFG_AGENT_RATE_WINDOW_MS', 60000),
+app.use('/api/agents', requireAuth, rateLimit({
+  windowMs: envInt('QAFG_AGENT_RATE_WINDOW_MS', 60000, { max: MAX_TIMER_MS }),
   max: envInt('QAFG_AGENT_RATE_MAX', 15),
   message: 'Too many agent requests. Wait a moment and try again.',
 }));
