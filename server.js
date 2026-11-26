@@ -12,6 +12,7 @@ import { generateWithProvider, detectProviders } from "./providers.js";
 import { loadLanguageSkill } from "./skills.js";
 import { rateLimit } from "./middleware/rateLimit.js";
 import { envInt, MAX_TIMER_MS } from "./config.js";
+import { createConcurrencyGate } from "./middleware/concurrencyGate.js";
 import { extractJSON } from "./agents/json.js";
 import { normalizeRequest } from "./agents/catalog.js";
 import { runIntake } from "./agents/intake.js";
@@ -762,6 +763,11 @@ function detectLanguage(files) {
   return 'python'; // Default fallback
 }
 
+// Cap on simultaneously executing test runs. A per-minute rate limit cannot bound this:
+// each run can last up to QAFG_TEST_TIMEOUT_MS (10 min), so a handful of requests per
+// minute would otherwise pile up dozens of browsers and package installs.
+const testRunGate = createConcurrencyGate(envInt('QAFG_MAX_CONCURRENT_RUNS', 2));
+
 // Run tests endpoint
 app.post("/api/run-tests", async (req, res) => {
   const { files, browser = 'chromium', headed = false, slowMo = 0 } = req.body;
@@ -786,6 +792,17 @@ app.post("/api/run-tests", async (req, res) => {
   } catch (scanErr) {
     return res.status(400).json({ error: scanErr.message });
   }
+
+  // Take a run slot only after cheap validation, and release it in the `finally` below
+  // so every exit path (success, error, timeout) frees it. Nothing may run between
+  // acquiring and entering the `try`.
+  const releaseRunSlot = testRunGate.tryAcquire();
+  if (!releaseRunSlot) {
+    return res.status(429).json({
+      error: `${testRunGate.max} test run${testRunGate.max === 1 ? ' is' : 's are'} already in progress (the limit). Wait for one to finish and try again.`,
+    });
+  }
+  console.log(`[run-tests] active runs: ${testRunGate.active}/${testRunGate.max}`);
 
   let tempDir;
 
@@ -870,6 +887,7 @@ app.post("/api/run-tests", async (req, res) => {
       res.end();
     }
   } finally {
+    releaseRunSlot();
     // Always clean up the tempdir to avoid disk fill.
     if (tempDir) {
       rm(tempDir, { recursive: true, force: true }).catch(e =>
