@@ -1,4 +1,5 @@
 import { runAgent, asArray, str, need } from "./runAgent.js";
+import { repoContextToPrompt } from "./repoAnalyst.js";
 
 const SYSTEM = `You are the Test Planner Agent, a senior QA engineer.
 You design a risk-based test plan for a website from real page analysis data. You do not write code.
@@ -6,16 +7,18 @@ Output ONLY a single valid JSON object.`;
 
 const PRIORITIES = ["P0", "P1", "P2"];
 
-export async function runTestPlanner({ request, pageAnalysis, generate, provider, apiKey, onEvent }) {
+export async function runTestPlanner({ request, pageAnalysis, repoContext, generate, provider, apiKey, onEvent }) {
   const prompt = `Create a test plan for ${request.targetUrl}.
 Automation stack that will implement it: ${request.language} + ${request.framework}.
 User focus areas: ${request.focus.join("; ") || "none stated, use your judgment"}.
 
 ${pageAnalysis}
 
+${repoContextToPrompt(repoContext)}
+
 Rules:
 - 4 to 6 scenarios, ordered by priority. Prefer a mix: smoke, functional, negative, navigation.
-- Only plan what is verifiable from the page analysis above. Do not assume features, credentials, or elements that were not detected.
+- Only plan what is verifiable from the page analysis and the repository analysis above (when present, the repository analysis is the better guide to pages, forms and flows). Do not assume features, credentials, or elements that were not detected.
 - Do not plan interaction with cookie banners or modals.
 - Each scenario must be automatable in a single short test with clear assertions.
 

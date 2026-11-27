@@ -1,6 +1,7 @@
 import { runAgent, asArray, str, need, safe } from "./runAgent.js";
+import { repoContextToPrompt } from "./repoAnalyst.js";
 
-export async function runEngineer({ request, testPlan, architecture, pageAnalysis, langPrompt, generate, provider, apiKey, onEvent }) {
+export async function runEngineer({ request, testPlan, architecture, pageAnalysis, repoContext, langPrompt, generate, provider, apiKey, onEvent }) {
   const plan = testPlan.scenarios
     .map((s) => `${s.id} [${s.priority}] ${s.title}\n  steps: ${s.steps.join(" -> ")}\n  expected: ${s.expected}`)
     .join("\n");
@@ -15,6 +16,8 @@ export async function runEngineer({ request, testPlan, architecture, pageAnalysi
 Target: ${request.targetUrl}  Stack: ${request.language} + ${request.framework}
 
 ${pageAnalysis}
+
+${repoContextToPrompt(repoContext)}
 
 APPROVED TEST PLAN (implement every scenario; this overrides any test count in the file list below):
 ${plan}
