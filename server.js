@@ -818,6 +818,7 @@ app.post("/api/run-tests", async (req, res) => {
     console.log("Created temp dir:", tempDir);
 
     // Write all files
+    let stagedCsprojPath = null;
     for (const file of files) {
       // Handle paths that might be in the filename itself
       let fileName = file.name;
@@ -852,6 +853,7 @@ app.post("/api/run-tests", async (req, res) => {
 
       await writeFile(fullPath, file.content);
       console.log("Wrote:", fullPath);
+      if (fileName.endsWith('.csproj') && !stagedCsprojPath) stagedCsprojPath = fullPath;
     }
 
     // Set up SSE for streaming output
@@ -875,7 +877,7 @@ app.post("/api/run-tests", async (req, res) => {
     await runWithDeadline(async () => {
       if (language === 'csharp') {
         console.log("Routing to C# test execution");
-        await runCSharpTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
+        await runCSharpTests(tempDir, stagedCsprojPath, selectedBrowser, headed, slowMoMs, sendEvent);
       } else if (language === 'javascript' || language === 'typescript') {
         console.log(`Routing to ${language} test execution`);
         await runJavaScriptTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
@@ -892,8 +894,8 @@ app.post("/api/run-tests", async (req, res) => {
 
   } catch (error) {
     console.error("Run tests error:", error);
-    // Our own deadline message is safe to show; anything else stays generic.
-    const message = error.code === 'RUN_DEADLINE' ? error.message : 'Test run failed';
+    // Our own deadline and missing-dotnet messages are fixed strings, safe to show; anything else stays generic.
+    const message = (error.code === 'RUN_DEADLINE' || error.code === 'DOTNET_MISSING') ? error.message : 'Test run failed';
     if (!res.headersSent) {
       res.status(500).json({ error: message });
     } else if (!res.writableEnded) {
@@ -1331,7 +1333,8 @@ async function alignDotnetTargetFramework(tempDir, csprojPath, sendEvent) {
 
   const csproj = await readFile(csprojPath, 'utf-8');
   const match = csproj.match(/<TargetFramework>net(\d+)\.0<\/TargetFramework>/);
-  if (!match || parseInt(match[1], 10) === major) return;
+  // Only retarget when the SDK is too old to build the target; a lower supported target is kept.
+  if (!match || parseInt(match[1], 10) <= major) return;
 
   const updated = csproj.replace(match[0], `<TargetFramework>net${major}.0</TargetFramework>`);
   await writeFile(csprojPath, updated, 'utf-8');
@@ -1339,31 +1342,33 @@ async function alignDotnetTargetFramework(tempDir, csprojPath, sendEvent) {
 }
 
 // C# test execution
-async function runCSharpTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent) {
-  // Find the .csproj file
-  const csprojFile = files.find(f => f.name.endsWith('.csproj'));
-  if (!csprojFile) {
+async function runCSharpTests(tempDir, csprojPath, selectedBrowser, headed, slowMoMs, sendEvent) {
+  // csprojPath is the path validated by safeJoin during file staging.
+  if (!csprojPath) {
     throw new Error('No .csproj file found in C# project');
   }
-
-  const csprojPath = join(tempDir, csprojFile.name);
+  const runDir = resolve(tempDir);
+  if (!resolve(csprojPath).startsWith(runDir + sep)) {
+    throw new Error('Project file is outside the run directory');
+  }
   console.log("C# project file:", csprojPath);
 
-  // The model hard-codes a TargetFramework, but the installed SDK may be older or
-  // newer (NETSDK1045 on restore). Align the TFM with the SDK that is installed.
+  // The model hard-codes a TargetFramework that a too-old SDK cannot build (NETSDK1045).
   await alignDotnetTargetFramework(tempDir, csprojPath, sendEvent);
 
   sendEvent('status', 'Restoring NuGet packages...');
 
   // Run dotnet restore, keeping the output tail so a failure explains itself
-  const restore = spawn('dotnet', ['restore', csprojFile.name], {
+  const restore = spawn('dotnet', ['restore', csprojPath], {
     cwd: tempDir
   });
 
-  let restoreOutput = '';
+  let restoreDiagnostics = new Set();
+  let restoreTail = '';
   const onRestoreData = (data) => {
     const text = data.toString();
-    restoreOutput = (restoreOutput + text).slice(-4000);
+    restoreTail = (restoreTail + text).slice(-2000);
+    for (const id of restoreTail.match(/NETSDK\d+/g) || []) restoreDiagnostics.add(id);
     sendEvent('pip', text);
   };
   restore.stdout.on('data', onRestoreData);
@@ -1374,16 +1379,20 @@ async function runCSharpTests(tempDir, files, selectedBrowser, headed, slowMoMs,
       if (code === 0) {
         resolve();
       } else {
-        console.error('dotnet restore output:\n' + restoreOutput);
-        const hint = /NETSDK1045|NETSDK1141/.test(restoreOutput)
-          ? ' (the installed .NET SDK does not support the project target framework)'
-          : '';
+        const ids = [...restoreDiagnostics];
+        console.error(`dotnet restore failed: exit=${code} diagnostics=${JSON.stringify(ids)}`);
+        let hint = '';
+        if (restoreDiagnostics.has('NETSDK1045')) {
+          hint = ' (the installed .NET SDK does not support the project target framework)';
+        } else if (restoreDiagnostics.has('NETSDK1141')) {
+          hint = ' (the SDK pinned in global.json could not be resolved; check the pin or the installation)';
+        }
         reject(new Error(`dotnet restore failed with code ${code}${hint}`));
       }
     });
     restore.on('error', (err) => {
       reject(err.code === 'ENOENT'
-        ? new Error('dotnet was not found on PATH. Install the .NET SDK.')
+        ? Object.assign(new Error('The .NET SDK was not found. Install it and make sure `dotnet` is on PATH.'), { code: 'DOTNET_MISSING' })
         : err);
     });
   });
@@ -1391,7 +1400,7 @@ async function runCSharpTests(tempDir, files, selectedBrowser, headed, slowMoMs,
   sendEvent('status', 'Building project...');
 
   // Run dotnet build
-  const build = spawn('dotnet', ['build', csprojFile.name, '-c', 'Release'], {
+  const build = spawn('dotnet', ['build', csprojPath, '-c', 'Release'], {
     cwd: tempDir
   });
 
@@ -1477,7 +1486,7 @@ async function runCSharpTests(tempDir, files, selectedBrowser, headed, slowMoMs,
   const reportDir = join(tempDir, 'TestResults');
   const testProcess = spawn('dotnet', [
     'test',
-    csprojFile.name,
+    csprojPath,
     '-c', 'Release',
     '--no-build',
     '--logger', 'trx',
