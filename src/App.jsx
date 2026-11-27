@@ -192,6 +192,8 @@ const QAFrameworkGenerator = () => {
   const [testReport, setTestReport] = useState(null);
   const [expandedTests, setExpandedTests] = useState({});
   const [activeTab, setActiveTab] = useState('agents');
+  // Quick Start hands its form values to the agent pipeline, which plans, architects and writes the framework.
+  const [quickStart, setQuickStart] = useState(null);
 
   const { saved, save: saveToLibrary, remove: removeFromLibrary } = useFrameworkStorage();
 
@@ -211,6 +213,16 @@ const QAFrameworkGenerator = () => {
 
   const addLog = (message) => {
     setAnalysisLog(prev => [...prev, { time: new Date().toLocaleTimeString(), message }]);
+  };
+
+  const startQuickStart = () => {
+    setError(null);
+    if (config.framework !== 'playwright') {
+      setError(`The agent pipeline only supports Playwright so far. "${config.framework}" is not available yet.`);
+      return;
+    }
+    setQuickStart({ id: Date.now(), language: config.language, framework: config.framework, targetUrl: config.targetUrl.trim() });
+    setActiveTab('agents');
   };
 
   const generateFramework = async () => {
@@ -577,6 +589,8 @@ const QAFrameworkGenerator = () => {
             settings={settings}
             onFrameworkReady={handleAgentFramework}
             onOpenFiles={() => setActiveTab('explorer')}
+            quickStart={quickStart}
+            onQuickStartConsumed={() => setQuickStart(null)}
           />
         )}
 
@@ -666,7 +680,7 @@ const QAFrameworkGenerator = () => {
 
               {/* Generate button */}
               <button
-                onClick={generateFramework}
+                onClick={startQuickStart}
                 disabled={isGenerating}
                 style={{ width: '100%', padding: '12px', background: isGenerating ? 'rgba(99,102,241,0.4)' : 'linear-gradient(135deg,#5b5fc7,#7c3aed)', border: 'none', borderRadius: '8px', color: '#fff', fontSize: '13px', fontWeight: 700, cursor: isGenerating ? 'not-allowed' : 'pointer', fontFamily: "'Inter', sans-serif", display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '9px', boxShadow: isGenerating ? 'none' : '0 4px 14px rgba(99,102,241,.38)', letterSpacing: '.01em' }}
               >
