@@ -71,7 +71,7 @@ npm run dev:all   # Vite on :5173, Express on :3001
 
 - `.env` is optional. The server boots without any keys — `claude-local` is the default provider.
 - If `claude` isn't on the default PATH, set `CLAUDE_BIN=/full/path/to/claude` or prepend `~/.local/bin` to PATH.
-- Python test runs need Python 3. `pythonBin.js` probes `python`, `py -3` and `python3` (Windows) or `python3` and `python` (elsewhere) and uses the first that reports Python 3.x; the Windows `python3` Store placeholder (exit code 9009) is skipped. Override with `QAFG_PYTHON=/full/path/to/python`.
+- Python test runs need Python 3. `pythonBin.js` probes `python`, `py -3` and `python3` (Windows) or `python3` and `python` (elsewhere) with the run-scoped spawn, keeps those that report Python 3.x, and uses each one's own absolute `sys.executable` path (so launch never depends on the working directory). The Windows `python3` Store placeholder (exit code 9009) is skipped. Venv creation tries each interpreter in turn, so one without `venv`/`ensurepip` (e.g. Debian without `python3-venv`) falls back to the next. Override with `QAFG_PYTHON=/full/path/to/python`.
 - `npm run docker:build && npm run docker:up` for containerized runs — but remember `claude-local` won't work inside the container.
 
 ---
