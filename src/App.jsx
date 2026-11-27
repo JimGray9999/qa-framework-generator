@@ -448,13 +448,13 @@ const QAFrameworkGenerator = () => {
   // ─── Nav items ────────────────────────────────────────────────────────────
   const navItems = [
     { id: 'agents',   label: 'Agents',   icon: <IconAgents /> },
-    { id: 'config',   label: 'Config',   icon: <IconGrid /> },
+    { id: 'config',   label: 'Quick Start',   icon: <IconGrid /> },
     { id: 'explorer', label: 'Files',    icon: <IconFolder /> },
     { id: 'testrun',  label: 'Tests',    icon: <IconPlay /> },
     { id: 'library',  label: 'Library',  icon: <IconClock /> },
   ];
 
-  const tabLabel = { agents: 'AI Agent Pipeline', config: 'Framework Configuration', explorer: 'File Explorer', testrun: 'Test Runner', library: 'Saved Frameworks' };
+  const tabLabel = { agents: 'AI Agent Pipeline', config: 'Quick Start', explorer: 'File Explorer', testrun: 'Test Runner', library: 'Saved Frameworks' };
 
   // Called by the agent pipeline once the Automation Engineer has produced the framework.
   const handleAgentFramework = (result, request, artifacts) => {
