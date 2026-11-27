@@ -13,6 +13,7 @@ import { loadLanguageSkill } from "./skills.js";
 import { rateLimit } from "./middleware/rateLimit.js";
 import { envInt, MAX_TIMER_MS } from "./config.js";
 import { createConcurrencyGate } from "./middleware/concurrencyGate.js";
+import { findPythons, createVenvWithFallback, clearPythonCache, pythonCandidates, PYTHON_NOT_FOUND_MESSAGE, VENV_FAILED_MESSAGE } from "./pythonBin.js";
 import { extractJSON } from "./agents/json.js";
 import { normalizeRequest } from "./agents/catalog.js";
 import { runIntake } from "./agents/intake.js";
@@ -666,8 +667,6 @@ function validateApprovedPlan(plan) {
 
 // Detect Python command (Docker uses 'python'/'pip', macOS uses 'python3'/'pip3')
 const isDocker = process.env.NODE_ENV === 'production' || process.env.DOCKER === 'true';
-const PYTHON = isDocker ? 'python' : 'python3';
-const PIP = isDocker ? 'pip' : 'pip3';
 
 // Download as ZIP endpoint
 app.post("/api/download-zip", async (req, res) => {
@@ -918,17 +917,27 @@ async function runPythonTests(tempDir, files, selectedBrowser, headed, slowMoMs,
 
   // Create virtual environment
   const venvPath = join(tempDir, 'venv');
-  const createVenv = spawn(PYTHON, ['-m', 'venv', venvPath], {
-    cwd: tempDir
-  });
 
-  await new Promise((resolve, reject) => {
-    createVenv.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`Failed to create venv with code ${code}`));
-    });
-    createVenv.on('error', reject);
-  });
+  // Find working Python 3 interpreters as absolute paths (see pythonBin.js): `python3` is a
+  // non-working Store placeholder on Windows, and `python` is missing on some other setups.
+  const pythons = await findPythons({ candidates: pythonCandidates({ docker: isDocker }) });
+  if (!pythons.length) {
+    sendEvent('error', PYTHON_NOT_FOUND_MESSAGE);
+    throw new Error('No working Python 3 interpreter found');
+  }
+
+  // Create the venv, falling back to the next interpreter if one cannot (e.g. no python3-venv).
+  try {
+    const usedPython = await createVenvWithFallback({ pythons, venvPath, cwd: tempDir, rm });
+    console.log(`Using Python: ${usedPython}`);
+  } catch (err) {
+    if (err.failures) {
+      clearPythonCache(); // re-probe next time, in case the environment gets fixed
+      console.error(err.message);
+      sendEvent('error', VENV_FAILED_MESSAGE);
+    }
+    throw err;
+  }
 
   // Use the venv's pip and python
   const isWindows = process.platform === 'win32';

@@ -78,6 +78,12 @@ export function killTree(child) {
   });
 }
 
+// Throws if the enclosing run has been cancelled (deadline hit or failed), so loops that
+// start several processes can stop instead of launching more. A no-op outside a run.
+export function assertNotCancelled() {
+  if (storage.getStore()?.closed) throw new Error("Run was cancelled; not starting a new process");
+}
+
 export class RunDeadlineError extends Error {
   constructor(ms) {
     super(`The run exceeded its ${Math.round(ms / 60000 * 10) / 10}-minute limit and was stopped.`);
