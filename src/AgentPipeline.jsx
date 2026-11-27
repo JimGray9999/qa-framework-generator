@@ -1,18 +1,19 @@
 import React, { useState, useRef, useEffect } from 'react';
 
-// Four-agent pipeline UI: Intake -> Test Planner -> Architect -> Automation Engineer.
+// Agent pipeline UI: Intake -> (Repo Analyst, optional) -> Test Planner -> Architect -> Automation Engineer.
 // The client holds each agent's artifact, so the user can review and edit the plan
 // and architecture before the next agent runs (human-in-the-loop gates).
 
 const AGENTS = [
   { id: 'intake',    name: 'Intake',               role: 'Understands your request' },
+  { id: 'repo',      name: 'Repo Analyst',         role: 'Reads your code (optional)' },
   { id: 'planner',   name: 'Test Planner',         role: 'Drafts the test plan' },
   { id: 'architect', name: 'Architect',            role: 'Designs the framework' },
   { id: 'engineer',  name: 'Automation Engineer',  role: 'Writes the code' },
 ];
 
 // stage -> index of the agent currently active
-const STAGE_AGENT = { intake: 0, planning: 1, plan_review: 1, architecting: 2, arch_review: 2, coding: 3, done: 3 };
+const STAGE_AGENT = { intake: 0, planning: 2, plan_review: 2, architecting: 3, arch_review: 3, coding: 4, done: 4 };
 const WORKING = new Set(['planning', 'architecting', 'coding']);
 const GATES = new Set(['plan_review', 'arch_review']);
 
@@ -32,7 +33,7 @@ const Spinner = () => (
 
 export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, onOpenFiles }) {
   const [messages, setMessages] = useState([
-    { role: 'assistant', content: 'Describe what you want to test. For example: "Test the login and checkout flow of https://www.saucedemo.com using Python and Playwright."' },
+    { role: 'assistant', content: 'Describe what you want to test. For example: "Test the login and checkout flow of https://www.saucedemo.com using Python and Playwright."\n\nYou can also attach your app\'s source code below (a public GitHub repo or a zip) so the agents plan from the code.' },
   ]);
   const [input, setInput] = useState('');
   const [stage, setStage] = useState('intake');
@@ -45,6 +46,14 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
   const [warnings, setWarnings] = useState([]);
   const [result, setResult] = useState(null);
   const [view, setView] = useState('all'); // 'all' or an agent id: which agent's output to show
+  const [repoContext, setRepoContext] = useState(null);
+  const [repoInfo, setRepoInfo] = useState(null);
+  const [repoStatus, setRepoStatus] = useState('idle'); // idle | working | done | error
+  const [repoUrl, setRepoUrl] = useState('');
+  const fileRef = useRef(null);
+  // The attachment is snapshotted when a request is sent and used by every stage of that run,
+  // so the Planner, Architect and Engineer can never disagree about whether code was attached.
+  const runRepoRef = useRef(null);
   const endRef = useRef(null);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, busy]);
@@ -62,6 +71,31 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
     return data;
   };
 
+  // ── Repo Analyst: attach a public GitHub repo or a zip ──
+  const attachRepo = async (load) => {
+    setRepoStatus('working'); setError(null);
+    try {
+      const data = await load();
+      setRepoContext(data.repoContext); setRepoInfo(data.info); setRepoStatus('done');
+    } catch (e) { setRepoStatus('error'); setError(e.message); }
+  };
+  const attachGithub = () => attachRepo(() => post('/api/agents/repo/github', { url: repoUrl.trim() }));
+  const attachZip = (file) => {
+    if (!file) return;
+    // No size check here: the server enforces its configured limit (QAFG_MAX_REPO_ZIP_BYTES)
+    // and answers 413 with a message, so raising the limit needs no client change.
+    return attachRepo(async () => {
+      const headers = { 'Content-Type': 'application/zip', 'X-QAFG-Filename': encodeURIComponent(file.name) };
+      if (settings.provider) headers['X-QAFG-Provider'] = settings.provider;
+      if (settings.apiKey) headers['X-QAFG-Api-Key'] = settings.apiKey;
+      const res = await apiFetch('/api/agents/repo/zip', { method: 'POST', headers, body: file });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
+      return data;
+    });
+  };
+  const clearRepo = () => { setRepoContext(null); setRepoInfo(null); setRepoStatus('idle'); setRepoUrl(''); setError(null); };
+
   const reset = () => {
     setMessages(m => m.slice(0, 1)); setStage('intake'); setError(null); setRequest(null);
     setTestPlan(null); setArchitecture(null); setWarnings([]); setResult(null); setIncluded({});
@@ -70,7 +104,7 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
   const runPlanner = async (req) => {
     setStage('planning'); setError(null);
     try {
-      const data = await post('/api/agents/plan', { request: req });
+      const data = await post('/api/agents/plan', { request: req, repoContext: runRepoRef.current });
       setRequest(data.request);
       setTestPlan(data.testPlan);
       setIncluded(Object.fromEntries(data.testPlan.scenarios.map(s => [s.id, true])));
@@ -80,11 +114,13 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
 
   const send = async () => {
     const text = input.trim();
-    if (!text || busy || stage !== 'intake') return;
+    // Not while the code is still being analysed: the run must start with the final attachment.
+    if (!text || busy || stage !== 'intake' || repoStatus === 'working') return;
+    runRepoRef.current = repoContext;
     const next = [...messages, { role: 'user', content: text }];
     setMessages(next); setInput(''); setBusy(true); setError(null);
     try {
-      const data = await post('/api/agents/intake', { messages: next.slice(1) });
+      const data = await post('/api/agents/intake', { messages: next.slice(1), hasRepo: !!runRepoRef.current });
       setMessages(m => [...m, { role: 'assistant', content: data.reply }]);
       if (data.status === 'ready') {
         // Save the request first so the Intake card is available while planning runs
@@ -103,7 +139,7 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
   const runArchitect = async () => {
     setStage('architecting'); setError(null);
     try {
-      const data = await post('/api/agents/architect', { request, testPlan: approvedPlan() });
+      const data = await post('/api/agents/architect', { request, testPlan: approvedPlan(), repoContext: runRepoRef.current });
       setArchitecture(data.architecture);
       setStage('arch_review');
     } catch (e) { setError(e.message); setStage('plan_review'); }
@@ -112,7 +148,7 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
   const runEngineer = async () => {
     setStage('coding'); setError(null);
     try {
-      const data = await post('/api/agents/engineer', { request, testPlan: approvedPlan(), architecture });
+      const data = await post('/api/agents/engineer', { request, testPlan: approvedPlan(), architecture, repoContext: runRepoRef.current });
       const parsed = JSON.parse(data.content[0].text);
       setWarnings(data.warnings || []);
       setResult(parsed);
@@ -124,11 +160,16 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
   const editScenario = (id, patch) =>
     setTestPlan(p => ({ ...p, scenarios: p.scenarios.map(s => (s.id === id ? { ...s, ...patch } : s)) }));
 
-  const hasOutput = { intake: !!request, planner: !!testPlan, architect: !!architecture, engineer: stage === 'coding' || !!result };
+  const hasOutput = { intake: !!request, repo: !!repoContext, planner: !!testPlan, architect: !!architecture, engineer: stage === 'coding' || !!result };
   const show = (id) => view === 'all' || view === id;
 
   const active = STAGE_AGENT[stage];
-  const agentState = (i) => (i < active ? 'done' : i > active ? 'idle' : stage === 'done' ? 'done' : WORKING.has(stage) ? 'working' : GATES.has(stage) ? 'review' : 'active');
+  const agentState = (i) => {
+    // The Repo Analyst is optional and runs when code is attached, independent of the main stage.
+    if (AGENTS[i].id === 'repo') return repoStatus === 'working' ? 'working' : repoStatus === 'done' ? 'done' : repoStatus === 'error' ? 'review' : 'optional';
+    return baseAgentState(i);
+  };
+  const baseAgentState = (i) => (i < active ? 'done' : i > active ? 'idle' : stage === 'done' ? 'done' : WORKING.has(stage) ? 'working' : GATES.has(stage) ? 'review' : 'active');
 
   return (
     <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
@@ -155,20 +196,54 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
         <div style={{ padding: '12px 22px 20px', borderTop: '1px solid rgba(255,255,255,.06)' }}>
           {request && (
             <div style={{ fontSize: 11, color: '#71717a', marginBottom: 10, lineHeight: 1.6 }}>
-              <b style={{ color: '#a1a1aa' }}>{request.language} + {request.framework}</b> · {request.targetUrl}
+              <b style={{ color: '#a1a1aa' }}>{request.language} + {request.framework}</b> · {request.targetUrl || '(URL from the code)'}
             </div>
           )}
+
+          {/* Attach code (optional) */}
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: '#52525b', marginBottom: 6 }}>Attach code (optional)</div>
+            {repoStatus === 'done' && repoInfo ? (
+              <div style={{ ...card, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#a1a1aa' }}>
+                <span style={{ color: '#4ade80' }}>●</span>
+                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={repoInfo.name}>{repoInfo.name}</span>
+                <button type="button" onClick={clearRepo} disabled={stage !== 'intake' || busy} style={{ background: 'none', border: 'none', color: stage === 'intake' && !busy ? '#a5b4fc' : '#3f3f46', cursor: stage === 'intake' && !busy ? 'pointer' : 'default', fontSize: 11, textDecoration: 'underline' }}>Remove</button>
+              </div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input
+                    value={repoUrl}
+                    onChange={e => setRepoUrl(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); if (repoUrl.trim()) attachGithub(); } }}
+                    disabled={stage !== 'intake' || busy || repoStatus === 'working'}
+                    placeholder="https://github.com/owner/repo"
+                    aria-label="Public GitHub repository URL"
+                    style={{ flex: 1, minWidth: 0, boxSizing: 'border-box', padding: '7px 10px', background: 'rgba(255,255,255,.04)', border: '1px solid rgba(255,255,255,.1)', borderRadius: 7, color: '#e4e4e7', fontSize: 12, fontFamily: "'Inter', sans-serif", outline: 'none' }}
+                  />
+                  <button type="button" onClick={attachGithub} disabled={stage !== 'intake' || busy || repoStatus === 'working' || !repoUrl.trim()} style={{ ...btn(false, stage !== 'intake' || busy || repoStatus === 'working' || !repoUrl.trim()), padding: '7px 12px' }}>Analyze</button>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                  <input ref={fileRef} type="file" accept=".zip,application/zip,application/x-zip-compressed" style={{ display: 'none' }}
+                    onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; attachZip(f); }} />
+                  <button type="button" onClick={() => fileRef.current?.click()} disabled={stage !== 'intake' || busy || repoStatus === 'working'} style={{ ...btn(false, stage !== 'intake' || busy || repoStatus === 'working'), padding: '6px 12px' }}>Upload .zip</button>
+                  {repoStatus === 'working' && <span style={{ fontSize: 11, color: '#a5b4fc' }}><Spinner /> Analyzing code...</span>}
+                </div>
+              </>
+            )}
+            <div style={{ fontSize: 10.5, color: '#52525b', marginTop: 6, lineHeight: 1.5 }}>Public repos only. Source is sent to your selected AI provider. Secret files (.env, keys) are skipped and credential-like strings are redacted on a best-effort basis, which cannot catch everything, so don't attach code you wouldn't share with that provider.</div>
+          </div>
           <textarea
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-            disabled={stage !== 'intake' || busy}
+            disabled={stage !== 'intake' || busy || repoStatus === 'working'}
             rows={3}
             placeholder={stage === 'intake' ? 'What should we test?' : 'Request captured. Review the pipeline on the right.'}
             style={{ width: '100%', boxSizing: 'border-box', padding: '9px 12px', background: 'rgba(255,255,255,.04)', border: '1px solid rgba(255,255,255,.1)', borderRadius: 7, color: '#e4e4e7', fontSize: 13, fontFamily: "'Inter', sans-serif", resize: 'none', outline: 'none' }}
           />
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button onClick={send} disabled={stage !== 'intake' || busy || !input.trim()} style={btn(true, stage !== 'intake' || busy || !input.trim())}>Send</button>
+            <button onClick={send} disabled={stage !== 'intake' || busy || repoStatus === 'working' || !input.trim()} style={btn(true, stage !== 'intake' || busy || repoStatus === 'working' || !input.trim())}>Send</button>
             {stage !== 'intake' && <button onClick={reset} disabled={WORKING.has(stage)} style={btn(false, WORKING.has(stage))}>New request</button>}
           </div>
         </div>
@@ -181,6 +256,7 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
           {AGENTS.map((a, i) => {
             const st = agentState(i);
             const color = st === 'done' ? '#4ade80' : st === 'review' ? '#fbbf24' : st === 'working' || st === 'active' ? '#a5b4fc' : '#3f3f46';
+            const dim = st === 'idle' || st === 'optional';
             const clickable = hasOutput[a.id];
             const selected = view === a.id;
             return (
@@ -194,13 +270,13 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
                 style={{
                   ...card, flex: 1, padding: '12px 14px', textAlign: 'left', font: 'inherit', color: 'inherit',
                   cursor: clickable ? 'pointer' : 'default',
-                  borderColor: selected ? color : st === 'idle' ? 'rgba(255,255,255,.05)' : color + '55',
+                  borderColor: selected ? color : dim ? 'rgba(255,255,255,.05)' : color + '55',
                   background: selected ? 'rgba(99,102,241,.12)' : card.background,
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 10, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color }}>
                   {st === 'working' ? <Spinner /> : <span style={{ width: 8, height: 8, borderRadius: '50%', background: color }} />}
-                  {st === 'review' ? 'Awaiting you' : st === 'idle' ? 'Waiting' : st === 'done' ? 'Done' : st === 'working' ? 'Working' : 'Active'}
+                  {st === 'review' ? (a.id === 'repo' ? 'Failed' : 'Awaiting you') : st === 'optional' ? 'Optional' : st === 'idle' ? 'Waiting' : st === 'done' ? 'Done' : st === 'working' ? 'Working' : 'Active'}
                 </div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: '#e4e4e7', marginTop: 6 }}>{a.name}</div>
                 <div style={{ fontSize: 11, color: '#52525b', marginTop: 2 }}>{a.role}</div>
@@ -232,9 +308,41 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
             <h3 style={{ margin: '0 0 10px', fontSize: 13, color: '#f4f4f5' }}>Request (from Intake)</h3>
             <div style={{ fontSize: 12.5, color: '#a1a1aa', lineHeight: 1.8 }}>
               <div><span style={{ color: '#52525b' }}>Stack:</span> {request.language} + {request.framework}</div>
-              <div><span style={{ color: '#52525b' }}>Target:</span> <code style={{ color: '#c7d2fe' }}>{request.targetUrl}</code></div>
+              <div><span style={{ color: '#52525b' }}>Target:</span> {request.targetUrl ? <code style={{ color: '#c7d2fe' }}>{request.targetUrl}</code> : <span>not given (the base URL from the code, or http://localhost:3000)</span>}{request.targetUrlSource === 'repo' && ' · taken from the code'}{request.targetUrlSource === 'default' && ' · default'}</div>
               <div><span style={{ color: '#52525b' }}>Focus:</span> {request.focus?.length ? request.focus.join(' · ') : 'none stated'}</div>
             </div>
+          </section>
+        )}
+
+        {/* Repo analysis */}
+        {show('repo') && repoContext && repoInfo && (
+          <section style={{ ...card, padding: 20, marginBottom: 16 }}>
+            <h3 style={{ margin: '0 0 6px', fontSize: 13, color: '#f4f4f5' }}>Repo Analysis <span style={{ color: '#52525b', fontWeight: 400 }}>· {repoInfo.name}</span></h3>
+            <p style={{ margin: '0 0 10px', fontSize: 12.5, color: '#a1a1aa', lineHeight: 1.5 }}>{repoContext.summary}</p>
+            <div style={{ fontSize: 11.5, color: '#71717a', marginBottom: 12, lineHeight: 1.7 }}>
+              {repoInfo.filesAnalysed} of {repoInfo.filesTotal} files analysed · {repoInfo.routes} routes · {repoInfo.selectors} UI selectors found
+              {repoInfo.secretFilesSkipped > 0 && <> · <span style={{ color: '#4ade80' }}>{repoInfo.secretFilesSkipped} secret-bearing file(s) skipped</span></>}
+              {repoInfo.redactions > 0 && <> · <span style={{ color: '#4ade80' }}>{repoInfo.redactions} credential-like string(s) redacted</span></>}
+              {repoContext.stack.length > 0 && <div>Stack: {repoContext.stack.join(', ')} · confidence: {repoContext.confidence}</div>}
+            </div>
+            {repoContext.pages.length > 0 && (
+              <>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: '#52525b', marginBottom: 6 }}>Pages</div>
+                {repoContext.pages.map((p, i) => (
+                  <div key={i} style={{ fontSize: 12, padding: '3px 0', color: '#a1a1aa' }}>
+                    <b style={{ color: '#e4e4e7' }}>{p.name}</b>{p.route && <code style={{ color: '#c7d2fe' }}> {p.route}</code>} · {p.purpose}
+                  </div>
+                ))}
+              </>
+            )}
+            {(repoContext.howToRun.start || repoContext.howToRun.baseUrl) && (
+              <div style={{ fontSize: 12, color: '#a1a1aa', marginTop: 12 }}>
+                <span style={{ color: '#52525b' }}>How to run:</span> {[repoContext.howToRun.install, repoContext.howToRun.start].filter(Boolean).map((c, i) => <code key={i} style={{ color: '#c7d2fe', marginRight: 8 }}>{c}</code>)}
+                {repoContext.howToRun.baseUrl && <>→ <code style={{ color: '#c7d2fe' }}>{repoContext.howToRun.baseUrl}</code></>}
+              </div>
+            )}
+            {repoContext.risks.length > 0 && <div style={{ fontSize: 12, color: '#fbbf24', marginTop: 12, lineHeight: 1.6 }}>⚠ {repoContext.risks.join(' · ')}</div>}
+            {repoContext.selectorHints.length > 0 && <div style={{ fontSize: 11.5, color: '#71717a', marginTop: 10 }}>{repoContext.selectorHints.length} verified selector(s) will be passed to the planner and engineer.</div>}
           </section>
         )}
 

@@ -50,6 +50,49 @@ The response includes `promptSource` so runs can be compared.
 
 ---
 
+## Repo analysis (optional pipeline input)
+
+The Agents tab can take the app's source code (public GitHub URL or an uploaded zip). A **Repo Analyst** agent
+reads it and produces a validated `repoContext` (pages, forms, auth, how to run, candidate flows, verified
+selectors) that the Planner, Architect and Engineer prompts include. The live URL becomes optional: without one
+the base URL found in the code (localhost only) or `http://localhost:3000` is used, and no live page is fetched.
+
+Security properties (do not weaken):
+- **Archives are untrusted and never touch the disk.** `repo/zipReader.js` is a small in-house reader (stored/deflate
+  only; no ZIP64, encryption or symlinks). Entries are read selectively into memory with a hard per-entry output cap
+  (`maxOutputLength`, whatever sizes the archive declares), an entry-count cap and bounds-checked offsets. Paths are
+  normalised because they appear in prompts.
+- **GitHub downloads** (`repo/github.js`): only `github.com` URLs are accepted; the request is built from validated
+  `owner/repo/ref` and goes to `api.github.com`; redirects are followed manually and each hop must be `https` on
+  `api.github.com` or `codeload.github.com`. Size (`QAFG_MAX_REPO_ZIP_BYTES`, default 25 MB) and time are capped.
+  Not verified against the live GitHub API from the dev sandbox (it could not reach GitHub).
+- **Secret filtering is best-effort, not a guarantee** (`repo/digest.js`): `.env*`, keys, certs, `credentials*`, etc.
+  are never read, and credential-like strings are pattern-redacted. Redaction covers EVERYTHING that leaves the server
+  (file samples, scripts, routes, selectors, paths, the rendered prompt, and the analysis that is passed on), runs on
+  whole files before clipping (so a secret cannot straddle the cut), and drops metadata that looks like a credential.
+  Patterns cannot catch every secret; the UI tells users the source goes to their selected provider and not to attach
+  code they would not share with it.
+- **Text-only execution for source-derived prompts.** Prompt instructions do not enforce a boundary, so the repository
+  routes and every agent that consumes `repoContext` call the provider with `isolated: true`. For the local Claude CLI
+  (`claudeIsolation.js`) that means `--tools ""`, `--strict-mcp-config`, `--disable-slash-commands`,
+  `--no-session-persistence`, `--settings '{"disableAllHooks":true}'`, an empty scratch cwd and an allow-listed
+  environment (`QAFG_CLAUDE_ENV_PASSTHROUGH=A,B` adds names; `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` are never passed).
+  Verified against `claude` 2.1.332: under the default flags user- and project-level hooks and MCP servers all ran; under
+  these none did. `--bare` is not used because it disables subscription login. On Windows the npm `.cmd` wrapper is
+  refused in isolated mode (arguments cannot be quoted reliably through a shell); use the native `claude.exe` or an API
+  provider (tool-free by construction). Re-check the flags when upgrading the CLI.
+- **Prompt injection:** repository text is fenced in `<<<FILE ...>>>` markers, the analyst prompt treats it as data, its
+  output is validated and size-capped, and selectors it cites must appear in the deterministic extraction. The
+  repo-derived base URL is parsed with `URL` and restricted to loopback hosts (no credentials, valid port). The existing
+  human review gates still apply. Fencing is mitigation only; the isolation above is what limits the damage.
+- **Resource bounds:** archive inflation is async (zlib thread pool) with a per-entry output cap; every read attempt,
+  failed or not, is charged to a decompression budget; overlapping entries are refused; extraction regexes are bounded and
+  files are scanned in bounded slices with the event loop yielded between files; each prompt section has a character
+  budget and the whole prompt has a hard cap (`DIGEST_LIMITS`).
+- Uploads use a per-route raw body parser mounted after auth and the rate limiter, so unauthenticated requests are never buffered.
+
+---
+
 ## HTTP API
 
 | Endpoint | Purpose |
@@ -57,6 +100,9 @@ The response includes `promptSource` so runs can be compared.
 | `POST /api/generate` | Body: `{ language, framework, targetUrl, provider?, apiKey? }`. Returns generated files as JSON. |
 | `POST /api/run-tests` | Writes files to a tempdir, installs deps, runs tests. Streams output via SSE. |
 | `POST /api/download-zip` | Streams a zip of the provided files. |
+| `POST /api/agents/repo/github` | Body: `{ url }` (public `https://github.com/owner/repo[/tree/ref]`). Downloads the repo zip and runs the Repo Analyst. Returns `{ repoContext, info }`. |
+| `POST /api/agents/repo/zip` | Raw `application/zip` body (headers `X-QAFG-Filename`, `X-QAFG-Provider`, `X-QAFG-Api-Key`). Same result as the GitHub route. |
+| `POST /api/agents/{intake,plan,architect,engineer}` | The agent pipeline. `plan`/`architect`/`engineer` accept an optional `repoContext`; `intake` accepts `hasRepo`. |
 | `GET /api/providers` | Lists providers and their availability. |
 | `GET /api/health` | Liveness. |
 

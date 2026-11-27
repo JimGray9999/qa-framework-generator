@@ -1,4 +1,5 @@
 import { runAgent, asArray, str, need } from "./runAgent.js";
+import { repoContextToPrompt } from "./repoAnalyst.js";
 
 const SYSTEM = `You are the Framework Architect Agent.
 Given an approved test plan, you design the structure of the automation framework: files, page objects, fixtures, and how each scenario maps to a test. You do not write implementation code.
@@ -37,7 +38,7 @@ export function validateArchitecture(o, testPlan) {
   };
 }
 
-export async function runArchitect({ request, testPlan, pageAnalysis, requiredFiles, generate, provider, apiKey, onEvent }) {
+export async function runArchitect({ request, testPlan, pageAnalysis, repoContext, requiredFiles, generate, provider, apiKey, onEvent }) {
   const scenarios = testPlan.scenarios.map((s) => `${s.id} [${s.priority}] ${s.title}`).join("\n");
   const prompt = `Design the ${request.language} + ${request.framework} framework for ${request.targetUrl}.
 
@@ -46,6 +47,8 @@ ${scenarios}
 
 ${pageAnalysis}
 
+${repoContextToPrompt(repoContext)}
+
 Required deliverables and conventions for this stack (your file list must satisfy these):
 ${requiredFiles}
 
@@ -53,7 +56,7 @@ Rules:
 - Page Object Model; 2-3 page objects. Keep the scaffold lean, no base page class.
 - Group tests into 2-3 test files. Use idiomatic file/dir naming for ${request.language}.
 - Every file in "files" needs a one-line purpose. Include README.md and the dependency file.
-- Page object "selectors" must come from the page analysis only, otherwise leave empty and note defensive checks.
+- Page object "selectors" must come from the page analysis or the repository analysis's verified selectors only, otherwise leave empty and note defensive checks.
 
 JSON format:
 {"approach":"2-3 sentences on the design and why",

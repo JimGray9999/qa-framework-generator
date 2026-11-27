@@ -15,11 +15,14 @@ import { envInt, MAX_TIMER_MS } from "./config.js";
 import { createConcurrencyGate } from "./middleware/concurrencyGate.js";
 import { findPythons, createVenvWithFallback, clearPythonCache, pythonCandidates, PYTHON_NOT_FOUND_MESSAGE, VENV_FAILED_MESSAGE } from "./pythonBin.js";
 import { extractJSON } from "./agents/json.js";
-import { normalizeRequest } from "./agents/catalog.js";
+import { normalizeRequest, agentError } from "./agents/catalog.js";
 import { runIntake } from "./agents/intake.js";
 import { runTestPlanner } from "./agents/testPlanner.js";
 import { runArchitect, validateArchitecture } from "./agents/architect.js";
 import { runEngineer } from "./agents/engineer.js";
+import { sanitizeRepoContext } from "./agents/repoAnalyst.js";
+import { parseGitHubUrl, downloadGitHubZip } from "./repo/github.js";
+import { analyzeRepoBuffer } from "./repo/analyze.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -594,8 +597,12 @@ app.use('/api/agents', requireAuth, rateLimit({
   message: 'Too many agent requests. Wait a moment and try again.',
 }));
 
-const agentDeps = (body) => ({
-  generate: generateWithProvider,
+// `untrusted: true` marks calls whose prompt contains source-derived (attacker-influenced)
+// content: the repository routes and every agent that consumes the repository analysis.
+// For the local Claude CLI that means an isolated, tool-free session (claudeIsolation.js);
+// the API providers are tool-free already.
+const agentDeps = (body, { untrusted = false } = {}) => ({
+  generate: untrusted ? (args) => generateWithProvider({ ...args, isolated: true }) : generateWithProvider,
   provider: body.provider,
   apiKey: body.apiKey,
   onEvent: (e) => console.log(`[agent:${e.agent}] attempt ${e.attempt} ${e.ok ? 'ok' : 'rejected: ' + e.error}`),
@@ -604,7 +611,7 @@ const agentDeps = (body) => ({
 function agentRoute(handler) {
   return async (req, res) => {
     try {
-      res.json(await handler(req.body || {}));
+      res.json(await handler(req.body || {}, req));
     } catch (error) {
       console.error('[%s]', req.path, error);
       // Only deliberately user-facing errors are echoed; everything else stays generic.
@@ -613,30 +620,102 @@ function agentRoute(handler) {
   };
 }
 
+// --- Repository analysis (optional input to the pipeline) ----------------------------
+// A public GitHub repo URL or an uploaded zip is analysed by the Repo Analyst agent. The
+// archive is read in memory only (see repo/zipReader.js); the result (`repoContext`) is
+// small, validated JSON that the client passes back to the later agents, like every other
+// artifact in this stateless pipeline.
+const MAX_REPO_ZIP_BYTES = envInt('QAFG_MAX_REPO_ZIP_BYTES', 25 * 1024 * 1024);
+
+app.post('/api/agents/repo/github', agentRoute(async (body) => {
+  const ref = parseGitHubUrl(body.url);
+  const buffer = await downloadGitHubZip(ref, { maxBytes: MAX_REPO_ZIP_BYTES });
+  const name = `${ref.owner}/${ref.repo}${ref.ref ? `@${ref.ref}` : ''}`;
+  return analyzeRepoBuffer({ buffer, name, ...agentDeps(body, { untrusted: true }) });
+}));
+
+// Raw upload (Content-Type: application/zip). The body parser is mounted per route, after
+// the auth and rate-limit middleware above, so an unauthenticated client can never make
+// the server buffer a large upload. Provider settings travel in headers because the body
+// is the file itself.
+app.post('/api/agents/repo/zip',
+  express.raw({ type: ['application/zip', 'application/x-zip-compressed'], limit: MAX_REPO_ZIP_BYTES }),
+  agentRoute(async (body, req) => {
+    if (!Buffer.isBuffer(body) || body.length === 0) throw agentError('Upload a .zip file.');
+    let filename = '';
+    try { filename = decodeURIComponent(req.get('x-qafg-filename') || ''); } catch { /* keep empty */ }
+    filename = filename.replace(/[\u0000-\u001f\u007f]/g, '').split(/[\\/]/).pop().slice(0, 80) || 'upload.zip';
+    return analyzeRepoBuffer({
+      buffer: body,
+      name: `upload: ${filename}`,
+      ...agentDeps({ provider: req.get('x-qafg-provider') || undefined, apiKey: req.get('x-qafg-api-key') || undefined }, { untrusted: true }),
+    });
+  }));
+
+// The raw parser reports an oversized upload as an error; answer with JSON, not an HTML page.
+app.use('/api/agents/repo/zip', (err, req, res, next) => {
+  if (err?.type === 'entity.too.large') {
+    return res.status(413).json({ error: `That zip is larger than ${Math.round(MAX_REPO_ZIP_BYTES / 1048576)} MB. Upload a trimmed zip.` });
+  }
+  console.error('[/api/agents/repo/zip]', err);
+  res.status(400).json({ error: 'Could not read the uploaded file.' });
+});
+
+// Client-sent analysis is re-validated for shape and size before it enters a prompt.
+function readRepoContext(body) {
+  if (!body.repoContext) return null;
+  try {
+    return sanitizeRepoContext(body.repoContext);
+  } catch {
+    throw agentError('The repository analysis is invalid. Attach the repository again.');
+  }
+}
+
+// With code attached the URL is optional: use the base URL found in the code, else localhost.
+function resolveTarget(request, repoContext) {
+  if (request.targetUrl) return request;
+  const fromRepo = repoContext?.howToRun?.baseUrl;
+  return { ...request, targetUrl: fromRepo || 'http://localhost:3000', targetUrlSource: fromRepo ? 'repo' : 'default' };
+}
+
+// Only a URL the user gave is fetched. A repo-derived or default localhost URL is not a
+// public page (and the SSRF guard would block it anyway), so say so instead.
+async function pageAnalysisFor(request) {
+  if (request.targetUrlSource === 'user') return analyzePage(request.targetUrl);
+  const pageData = { fetched: false, title: '', inputs: [], buttons: [], links: [], forms: [] };
+  return {
+    pageData,
+    pageAnalysis: `No live page was analyzed because no URL for the running app was given. The tests assume the app is running at ${request.targetUrl} (${request.targetUrlSource === 'repo' ? 'taken from the code' : 'default'}). Rely on the repository analysis for pages, forms and selectors, and use defensive checks (page.title(), page.url, .count() > 0).`,
+  };
+}
+
 app.post('/api/agents/intake', agentRoute(async (body) => {
   const messages = Array.isArray(body.messages) ? body.messages.filter(m => m && typeof m.content === 'string') : [];
   if (!messages.length) throw Object.assign(new Error('A message is required.'), { expose: true });
-  return runIntake({ messages, ...agentDeps(body) });
+  return runIntake({ messages, hasRepo: body.hasRepo === true, ...agentDeps(body) });
 }));
 
 app.post('/api/agents/plan', agentRoute(async (body) => {
-  const request = normalizeRequest(body.request);
-  const { pageData, pageAnalysis } = await analyzePage(request.targetUrl);
-  const testPlan = await runTestPlanner({ request, pageAnalysis, ...agentDeps(body) });
+  const repoContext = readRepoContext(body);
+  const request = resolveTarget(normalizeRequest(body.request, { hasRepo: !!repoContext }), repoContext);
+  const { pageData, pageAnalysis } = await pageAnalysisFor(request);
+  const testPlan = await runTestPlanner({ request, pageAnalysis, repoContext, ...agentDeps(body, { untrusted: !!repoContext }) });
   return { request, testPlan, pageAnalysis: pageData };
 }));
 
 app.post('/api/agents/architect', agentRoute(async (body) => {
-  const request = normalizeRequest(body.request);
+  const repoContext = readRepoContext(body);
+  const request = resolveTarget(normalizeRequest(body.request, { hasRepo: !!repoContext }), repoContext);
   const testPlan = validateApprovedPlan(body.testPlan);
-  const { pageAnalysis } = await analyzePage(request.targetUrl);
+  const { pageAnalysis } = await pageAnalysisFor(request);
   const requiredFiles = getLanguagePrompt(request.language, request.targetUrl).fileList;
-  const architecture = await runArchitect({ request, testPlan, pageAnalysis, requiredFiles, ...agentDeps(body) });
+  const architecture = await runArchitect({ request, testPlan, pageAnalysis, repoContext, requiredFiles, ...agentDeps(body, { untrusted: !!repoContext }) });
   return { architecture };
 }));
 
 app.post('/api/agents/engineer', agentRoute(async (body) => {
-  const request = normalizeRequest(body.request);
+  const repoContext = readRepoContext(body);
+  const request = resolveTarget(normalizeRequest(body.request, { hasRepo: !!repoContext }), repoContext);
   const testPlan = validateApprovedPlan(body.testPlan);
   let architecture;
   try {
@@ -644,9 +723,9 @@ app.post('/api/agents/engineer', agentRoute(async (body) => {
   } catch (e) {
     throw Object.assign(new Error(`Invalid architecture: ${e.message}`), { expose: true });
   }
-  const { pageAnalysis } = await analyzePage(request.targetUrl);
+  const { pageAnalysis } = await pageAnalysisFor(request);
   const langPrompt = getLanguagePrompt(request.language, request.targetUrl);
-  const result = await runEngineer({ request, testPlan, architecture, pageAnalysis, langPrompt, ...agentDeps(body) });
+  const result = await runEngineer({ request, testPlan, architecture, pageAnalysis, repoContext, langPrompt, ...agentDeps(body, { untrusted: !!repoContext }) });
   return { content: [{ text: JSON.stringify({ files: result.files, summary: result.summary }) }], warnings: result.warnings };
 }));
 
