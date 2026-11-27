@@ -19,6 +19,7 @@ import { normalizeRequest, normalizeGenerateInput, agentError } from "./agents/c
 import { validateGeneratedFiles, resolveGeneratedPath } from "./agents/generated.js";
 import { redact } from "./repo/digest.js";
 import { debugLog } from "./debug.js";
+import { sandboxMode, sandboxLimits, checkSandboxReady, runPhase, SANDBOX_PHASE_TIMEOUT_MS, validateRequirements, findLocalTarget, readBoundedJson, capReport } from "./sandbox.js";
 import { securityHeaders } from "./middleware/securityHeaders.js";
 import { runIntake } from "./agents/intake.js";
 import { runTestPlanner } from "./agents/testPlanner.js";
@@ -939,6 +940,10 @@ app.post("/api/run-tests", async (req, res) => {
       if (fileName.endsWith('.csproj') && !stagedCsprojPath) stagedCsprojPath = fullPath;
     }
 
+    // Decided before anything runs (and before the report annotation below): an invalid QAFG_SANDBOX
+    // fails the request instead of falling back to running on the host.
+    const sandboxed = sandboxMode() === 'docker';
+
     // Set up SSE for streaming output
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -950,13 +955,21 @@ app.post("/api/run-tests", async (req, res) => {
       if (res.writableEnded || res.destroyed) return;
       // Annotate report payloads with the browser + headed mode so the UI can show them
       if (type === 'report' && data && typeof data === 'object') {
-        data = { ...data, browser: selectedBrowser, headed, slowMo: slowMoMs };
+        // The sandbox is always headless with no slow motion; report what actually ran.
+        data = { ...data, browser: selectedBrowser, headed: sandboxed ? false : headed, slowMo: sandboxed ? 0 : slowMoMs };
       }
       res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
     };
 
     // Route to the language handler under one deadline. runWithDeadline kills and reaps
     // every subprocess the run started before it settles, whatever the outcome.
+    // Sandbox mode is decided before anything runs. Languages without a sandbox runner are refused
+    // rather than quietly run on the host.
+    if (sandboxed && language !== 'python') {
+      const e = new Error(`Sandboxed runs support Python only so far, and this framework is ${language}. Set QAFG_SANDBOX=off to run it on this machine.`);
+      e.code = 'SANDBOX'; e.expose = true;
+      throw e;
+    }
     await runWithDeadline(async () => {
       if (language === 'csharp') {
         console.log("Routing to C# test execution");
@@ -967,6 +980,9 @@ app.post("/api/run-tests", async (req, res) => {
       } else if (language === 'java') {
         console.log("Routing to Java test execution");
         await runJavaTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
+      } else if (sandboxed) {
+        console.log("Routing to sandboxed Python test execution");
+        await runPythonSandboxed(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
       } else {
         console.log("Routing to Python test execution");
         await runPythonTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent);
@@ -978,7 +994,7 @@ app.post("/api/run-tests", async (req, res) => {
   } catch (error) {
     console.error("Run tests error:", error);
     // Our own deadline and missing-dotnet messages are fixed strings, safe to show; anything else stays generic.
-    const message = (error.code === 'RUN_DEADLINE' || error.code === 'DOTNET_MISSING') ? error.message : 'Test run failed';
+    const message = (error.code === 'RUN_DEADLINE' || error.code === 'DOTNET_MISSING' || error.code === 'SANDBOX') ? error.message : 'Test run failed';
     if (!res.headersSent) {
       res.status(500).json({ error: message });
     } else if (!res.writableEnded) {
@@ -997,6 +1013,33 @@ app.post("/api/run-tests", async (req, res) => {
 });
 
 // Python test execution
+// Normalise a pytest-json-report document to the common report shape (host and sandboxed runs).
+function normalizePytestReport(report) {
+  return {
+    summary: {
+      total: report.summary?.total || 0,
+      passed: report.summary?.passed || 0,
+      failed: report.summary?.failed || 0,
+      error: report.summary?.error || 0,
+      skipped: report.summary?.skipped || 0,
+      duration: report.duration || 0
+    },
+    tests: (report.tests || []).map(t => ({
+      nodeid: t.nodeid,
+      outcome: t.outcome,
+      duration: t.call?.duration || t.setup?.duration || 0,
+      setup: t.setup?.outcome,
+      call: t.call?.outcome,
+      teardown: t.teardown?.outcome,
+      error: t.call?.longrepr || t.setup?.longrepr || null,
+      stdout: t.call?.stdout || null,
+      stderr: t.call?.stderr || null
+    })),
+    environment: report.environment || {},
+    created: report.created
+  };
+}
+
 async function runPythonTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent) {
   sendEvent('status', 'Creating virtual environment...');
 
@@ -1144,34 +1187,76 @@ async function runPythonTests(tempDir, files, selectedBrowser, headed, slowMoMs,
   try {
     const reportContent = await readFile(reportPath, 'utf-8');
     const report = JSON.parse(reportContent);
-    sendEvent('report', {
-      summary: {
-        total: report.summary?.total || 0,
-        passed: report.summary?.passed || 0,
-        failed: report.summary?.failed || 0,
-        error: report.summary?.error || 0,
-        skipped: report.summary?.skipped || 0,
-        duration: report.duration || 0
-      },
-      tests: (report.tests || []).map(t => ({
-        nodeid: t.nodeid,
-        outcome: t.outcome,
-        duration: t.call?.duration || t.setup?.duration || 0,
-        setup: t.setup?.outcome,
-        call: t.call?.outcome,
-        teardown: t.teardown?.outcome,
-        error: t.call?.longrepr || t.setup?.longrepr || null,
-        stdout: t.call?.stdout || null,
-        stderr: t.call?.stderr || null
-      })),
-      environment: report.environment || {},
-      created: report.created
-    });
+    sendEvent('report', normalizePytestReport(report));
   } catch (e) {
     console.log('Could not read JSON report:', e.message);
   }
 
   sendEvent('complete', { exitCode: code });
+}
+
+// Python tests inside a throwaway Docker container (audit C3, QAFG_SANDBOX=docker). Install phase
+// with network, then the test phase (network per QAFG_SANDBOX_TEST_NETWORK). Always headless: a
+// container has no display. The run's temp directory is the only thing shared with the host.
+async function runPythonSandboxed(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent) {
+  // Refuse early what cannot work or cannot be made safe, before any container starts.
+  const localTarget = findLocalTarget(files);
+  if (localTarget) {
+    const e = new Error(`This framework targets ${localTarget}. Inside the sandbox "localhost" is the container itself, so it cannot reach an app running on your machine. Use a URL the container can reach, or set QAFG_SANDBOX=off to run it on this machine.`);
+    e.code = 'SANDBOX'; e.expose = true;
+    throw e;
+  }
+  const reqFile = files.find(f => f.name === 'requirements.txt' && !f.path);
+  validateRequirements(reqFile?.content);
+
+  await checkSandboxReady();
+  const limits = sandboxLimits();
+  const timeoutMs = SANDBOX_PHASE_TIMEOUT_MS();
+  if (headed) sendEvent('status', 'Headed mode is not available in the sandbox; running headless.');
+
+  // Setup is the network-enabled phase, so it must not execute anything from the generated project:
+  //  - it starts in "/" with `python -I` (isolated: no current-directory or user-site imports), so a
+  //    generated venv.py, pip.py or playwright.py in the workspace is never loaded;
+  //  - the venv and browser directories are deleted first, so staged files cannot pre-plant them;
+  //  - pip runs with --isolated (ignores config files and PIP_* variables) and --only-binary=:all:
+  //    (wheels only, so no setup.py of a dependency runs at install time);
+  //  - requirements.txt was validated above (plain requirement lines only).
+  // Egress is NOT restricted in this phase (only the packages index and browser CDN are needed); an
+  // allow-list for it is not built yet.
+  sendEvent('status', 'Sandbox: installing dependencies and browser...');
+  const installCode = await runPhase({
+    workDir: tempDir, limits, timeoutMs, network: 'bridge', containerCwd: '/',
+    env: { HOME: '/tmp/home', PLAYWRIGHT_BROWSERS_PATH: '/work/.browsers', PIP_DISABLE_PIP_VERSION_CHECK: '1' },
+    // The browser name is passed as an argument ($1), never spliced into the script.
+    command: ['sh', '-c', 'set -e; mkdir -p /tmp/home; rm -rf /work/venv /work/.browsers /work/.home; python3 -I -m venv /work/venv; /work/venv/bin/python -I -m pip --isolated install --only-binary=:all: --no-input -r /work/requirements.txt; /work/venv/bin/python -I -m playwright install "$1"', 'sh', selectedBrowser],
+    onOutput: (t) => sendEvent('pip', t),
+  });
+  if (installCode !== 0) throw new Error(`Sandbox install failed with code ${installCode}`);
+
+  sendEvent('status', `Sandbox: running tests on ${selectedBrowser} (${limits.testNetwork === 'none' ? 'no network' : 'network enabled'})...`);
+  const testCode = await runPhase({
+    workDir: tempDir, limits, timeoutMs, network: limits.testNetwork,
+    env: { HOME: '/work/.home', PLAYWRIGHT_BROWSERS_PATH: '/work/.browsers', PYTHONUNBUFFERED: '1', SLOWMO: '0', BROWSER: selectedBrowser, HEADED: '0' },
+    command: ['/work/venv/bin/python', '-m', 'pytest', '-v', '--tb=short', `--browser=${selectedBrowser}`,
+      '--json-report', '--json-report-file=/work/report.json', '--json-report-indent=2'],
+    onOutput: (t) => sendEvent('test', t),
+  }).catch((err) => {
+    // A failed cleanup must stop the run, not be reported as a failed test.
+    if (/confirm that the sandbox container was removed/.test(err.message)) throw err;
+    sendEvent('error', err.message);
+    return -1;
+  });
+
+  // The report was written by code that ran in the container: read it as untrusted (no links, regular
+  // file only, size and shape capped).
+  try {
+    const report = await readBoundedJson(join(tempDir, 'report.json'));
+    sendEvent('report', capReport(normalizePytestReport(report)));
+  } catch (e) {
+    console.log('Could not read JSON report:', e.message);
+    if (e.code === 'SANDBOX') sendEvent('error', e.message);
+  }
+  sendEvent('complete', { exitCode: testCode });
 }
 
 // JavaScript (Playwright) test execution

@@ -247,7 +247,7 @@ end-to-end with passing tests on Sauce Demo.
 
 ## Security audit — remaining work
 
-Only C3 is outstanding.
+Only the remainder of C3 is outstanding.
 
 ### ✅ Done
 - [x] **C1** Bind Express to `127.0.0.1`; lock CORS to Vite origin; per-process bearer token + `/api/session` bootstrap
@@ -269,11 +269,30 @@ Only C3 is outstanding.
 
 Tests: `npm test` (node's built-in runner with its own file discovery). Fixtures that are POSIX shell scripts skip themselves on Windows.
 
+- [~] **C3** Sandboxed test execution, **Python only, opt-in, not yet run against a real Docker daemon** (`sandbox.js`, `sandbox/python.Dockerfile`). See below.
+
+### Sandboxed test execution (C3)
+
+`QAFG_SANDBOX=docker` runs a Python test run inside throwaway Docker containers instead of on the host. Build the image once with `npm run sandbox:build`. Default is `off` (unchanged behavior); a value other than `docker` or `off` is an error, so a typo cannot turn the protection off.
+
+- **Two phases.** Install (network: `pip install`, browser download) and test. Each is a fresh container.
+- **Hardening** (`dockerRunArgs`, tested as data): `--cap-drop ALL`, `no-new-privileges`, `--read-only` root with a small `/tmp` tmpfs, `--pids-limit 512`, memory and CPU caps (`QAFG_SANDBOX_MEMORY`, `QAFG_SANDBOX_CPUS`, swap equals memory), the server's own uid, and exactly one bind mount (the run's temp directory at `/work`). Only an explicit environment is passed, so none of the server's environment (API keys) reaches generated code.
+- **Network deviates from the original audit text.** The audit asked for `--network=none` during tests, but the tests must reach the site under test, so the test phase keeps network (`bridge`) by default. That means generated code can still make outbound requests (exfiltration, internal-network probing). `QAFG_SANDBOX_TEST_NETWORK=none` removes the network for runs that need none. Closing this properly needs an egress allow-list (only the target host), which is not built.
+- **Fail closed.** With the sandbox on, JavaScript, TypeScript, Java and C# runs are refused with a message; they are not run on the host. Headed mode is not available (no display); runs are headless.
+- **Cleanup.** Each container is named and removed with `docker rm -f` after its phase (on success, failure, timeout or disk-limit stop; `QAFG_SANDBOX_PHASE_TIMEOUT_MS`, default 10 min). The removal is bounded, retried, and must be CONFIRMED ("no such container" counts); if it cannot be, the phase fails rather than passing silently. Killing the `docker run` client does not stop its container, so the teardown is also registered with the run scope (`registerCleanup` in `processScope.js`) and `runWithDeadline` awaits it before the slot is freed.
+- **Setup phase** (the network-enabled one) does not execute anything from the generated project: it starts in `/` with `python -I`, deletes `venv`, `.browsers` and `.home` from the workspace first, runs `pip --isolated install --only-binary=:all:` (no config files, no `PIP_*` variables, wheels only so no dependency `setup.py` runs), and `requirements.txt` must be plain requirement lines (no pip options, URLs, VCS links or paths). Egress in this phase is not restricted.
+- **Disk.** `/work` is a host bind mount. A watchdog (every 2 s) stops the container if the workspace exceeds `QAFG_SANDBOX_DISK_MB` (default 3072) or 300,000 entries. This is a watchdog, not a hard quota: a fast writer can overshoot between checks. A hard quota needs a size-limited volume (for example an XFS project quota or a loop-mounted image), not built.
+- **Report is untrusted.** The pytest report comes from a container-writable directory, so the host opens it without following links (`O_NOFOLLOW`, plus an `lstat` check), requires a regular file, caps it at 5 MB, and forwards only a capped, typed shape (2000 tests, 20,000 chars per text field).
+- **Local targets.** A framework whose files point at `localhost`, `127.x`, `[::1]` or `0.0.0.0` is refused up front, because inside the container those are the container itself. Use a URL the container can reach or `QAFG_SANDBOX=off`.
+- **Reported settings.** The report shows the effective browser settings (always headless, no slow motion in the sandbox), not the requested ones.
+- **Not verified:** nothing here was run against a real Docker daemon (none was available). Tested with a fake `docker` on `PATH` that records its calls. The image build, `python -I -m playwright install` and `pip --isolated` inside the container, Chromium in a read-only container, bind-mount ownership and the O_NOFOLLOW behavior on Windows are untested.
+- Does not apply when the server itself runs in the provided Docker image (no Docker socket there); use it on a host with Docker.
+
 ### 🔲 To do
 
 | ID | Severity | Item |
 |----|----------|------|
-| C3 | Critical | **Sandbox test execution** — run each language subprocess in a Docker container (`--network=none` for test phase, network only for install/browser-download phase). Blocks true public deployment. |
+| C3 | Critical | Remaining: sandbox runners for JavaScript/TypeScript, Java and C#; an egress allow-list for the setup and test phases; a hard disk quota; verify against a real Docker daemon. |
 
 ---
 

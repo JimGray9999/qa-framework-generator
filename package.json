@@ -13,7 +13,8 @@
     "docker:build": "docker compose build",
     "docker:up": "docker compose up",
     "docker:down": "docker compose down",
-    "test": "node --test"
+    "test": "node --test",
+    "sandbox:build": "docker build -f sandbox/python.Dockerfile -t qafg-sandbox-python sandbox"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",

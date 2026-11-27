@@ -102,7 +102,7 @@ export class RunDeadlineError extends Error {
 // times out, every process it started is killed and reaped BEFORE this promise settles,
 // so a caller that frees a resource afterwards (a run slot) never frees it early.
 export async function runWithDeadline(fn, deadlineMs) {
-  const scope = { children: new Set(), closed: false };
+  const scope = { children: new Set(), cleanups: new Set(), closed: false };
   let timer;
   const work = storage.run(scope, fn);
   work.catch(() => {}); // if the deadline wins, a later rejection must not be unhandled
@@ -115,5 +115,17 @@ export async function runWithDeadline(fn, deadlineMs) {
     clearTimeout(timer);
     scope.closed = true;
     await Promise.all([...scope.children].map(killTree));
+    // Resources that outlive a killed process (a Docker container keeps running when its client is
+    // killed) are torn down here and awaited, so the run slot is never freed while one is alive.
+    await Promise.all([...scope.cleanups].map((fn) => Promise.resolve().then(fn).catch((e) => console.error("[process] cleanup failed:", e?.message))));
   }
+}
+
+// Register an async teardown with the enclosing run. Returns a function that unregisters it (call
+// it once the resource is confirmed gone). Outside a run there is no scope, and this is a no-op.
+export function registerCleanup(fn) {
+  const scope = storage.getStore();
+  if (!scope) return () => {};
+  scope.cleanups.add(fn);
+  return () => scope.cleanups.delete(fn);
 }
