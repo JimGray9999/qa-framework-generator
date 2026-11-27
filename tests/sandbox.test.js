@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { sandboxMode, sandboxLimits, dockerRunArgs, runPhase, checkSandboxReady, SANDBOX_IMAGE, validateRequirements, findLocalTarget, readBoundedJson, capReport, workspaceUsage } from '../sandbox.js';
 import { runWithDeadline, registerCleanup } from '../processScope.js';
 
+// Fixtures that are POSIX shell scripts, FIFOs or symlinks cannot run on Windows.
+const POSIX = { skip: process.platform === 'win32' && 'POSIX shell fixture' };
 const limits = { memory: '2g', cpus: '2', testNetwork: 'bridge', diskBytes: 3 * 1024 ** 3, maxEntries: 300000 };
 const base = { name: 'qafg-abc123', workDir: '/tmp/qa-framework-xyz', network: 'bridge', limits, command: ['echo', 'hi'] };
 const optValue = (args, flag) => args[args.indexOf(flag) + 1];
@@ -92,7 +94,7 @@ async function withPath(dir, fn, { system = true } = {}) {
   try { return await fn(); } finally { process.env.PATH = prev; }
 }
 
-test('C3: runPhase streams output, returns the exit code and always removes the container', async () => {
+test('C3: runPhase streams output, returns the exit code and always removes the container', POSIX, async () => {
   for (const exit of [0, 3]) {
     const fd = fakeDocker({ runExit: exit });
     try {
@@ -108,7 +110,7 @@ test('C3: runPhase streams output, returns the exit code and always removes the 
   }
 });
 
-test('C3: a phase that never finishes is stopped and its container removed', async () => {
+test('C3: a phase that never finishes is stopped and its container removed', POSIX, async () => {
   const fd = fakeDocker({ runScript: 'sleep 5' });
   try {
     await assert.rejects(
@@ -119,7 +121,7 @@ test('C3: a phase that never finishes is stopped and its container removed', asy
   } finally { rmSync(fd.dir, { recursive: true, force: true }); }
 });
 
-test('C3: readiness check explains a missing image and a missing Docker', async () => {
+test('C3: readiness check explains a missing image and a missing Docker', POSIX, async () => {
   const missingImage = fakeDocker({ inspectExit: 1 });
   try {
     await assert.rejects(withPath(missingImage.dir, checkSandboxReady), /sandbox:build/);
@@ -166,7 +168,7 @@ test('C3: a target on the host machine is detected up front', () => {
   assert.equal(findLocalTarget([f('README.md', 'run on http://localhost:3000')]), null); // prose is ignored
 });
 
-test('C3: a hostile report file is not read', async () => {
+test('C3: a hostile report file is not read', POSIX, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'qafg-report-'));
   try {
     const ok = join(dir, 'ok.json'); writeFileSync(ok, '{"summary":{"total":1}}');
@@ -212,7 +214,7 @@ test('C3: a forwarded report is bounded and well-typed', () => {
   assert.equal(capReport({ tests: [{ nodeid: { x: 1 } }] }).tests[0].nodeid, '');
 });
 
-test('C3: workspace usage counts files and does not follow links', async () => {
+test('C3: workspace usage counts files and does not follow links', POSIX, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'qafg-usage-'));
   const outside = mkdtempSync(join(tmpdir(), 'qafg-outside-'));
   try {
@@ -228,7 +230,7 @@ test('C3: workspace usage counts files and does not follow links', async () => {
   } finally { rmSync(dir, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
 });
 
-test('C3: a phase that fills the workspace is stopped and its container removed', async () => {
+test('C3: a phase that fills the workspace is stopped and its container removed', POSIX, async () => {
   const work = mkdtempSync(join(tmpdir(), 'qafg-quota-'));
   const fd = fakeDocker({ runScript: 'for a in "$@"; do case "$a" in type=bind,source=*) src=${a#type=bind,source=}; src=${src%,target=*};; esac; done; dd if=/dev/zero of="$src/big" bs=1024 count=3072 2>/dev/null; sleep 5' });
   try {
@@ -240,7 +242,7 @@ test('C3: a phase that fills the workspace is stopped and its container removed'
   } finally { rmSync(fd.dir, { recursive: true, force: true }); rmSync(work, { recursive: true, force: true }); }
 });
 
-test('C3: removal that cannot be confirmed fails the phase instead of passing silently', async () => {
+test('C3: removal that cannot be confirmed fails the phase instead of passing silently', POSIX, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'qafg-fakedocker-'));
   writeFileSync(join(dir, 'docker'), '#!/bin/sh\ncase "$1" in run) echo ok; exit 0;; rm) echo "daemon unreachable" >&2; exit 1;; esac\n');
   chmodSync(join(dir, 'docker'), 0o755);
@@ -249,7 +251,7 @@ test('C3: removal that cannot be confirmed fails the phase instead of passing si
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('C3: "no such container" counts as removed (--rm got there first)', async () => {
+test('C3: "no such container" counts as removed (--rm got there first)', POSIX, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'qafg-fakedocker-'));
   writeFileSync(join(dir, 'docker'), '#!/bin/sh\ncase "$1" in run) echo ok; exit 0;; rm) echo "Error: No such container: x" >&2; exit 1;; esac\n');
   chmodSync(join(dir, 'docker'), 0o755);
