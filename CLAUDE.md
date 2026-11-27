@@ -247,7 +247,7 @@ end-to-end with passing tests on Sauce Demo.
 
 ## Security audit — remaining work
 
-Only C3 is outstanding.
+Only the remainder of C3 is outstanding.
 
 ### ✅ Done
 - [x] **C1** Bind Express to `127.0.0.1`; lock CORS to Vite origin; per-process bearer token + `/api/session` bootstrap
@@ -269,11 +269,25 @@ Only C3 is outstanding.
 
 Tests: `npm test` (node's built-in runner, `tests/*.test.js`).
 
+- [~] **C3** Sandboxed test execution, **Python only, opt-in, not yet run against a real Docker daemon** (`sandbox.js`, `sandbox/python.Dockerfile`). See below.
+
+### Sandboxed test execution (C3)
+
+`QAFG_SANDBOX=docker` runs a Python test run inside throwaway Docker containers instead of on the host. Build the image once with `npm run sandbox:build`. Default is `off` (unchanged behavior); a value other than `docker` or `off` is an error, so a typo cannot turn the protection off.
+
+- **Two phases.** Install (network: `pip install`, browser download) and test. Each is a fresh container.
+- **Hardening** (`dockerRunArgs`, tested as data): `--cap-drop ALL`, `no-new-privileges`, `--read-only` root with a small `/tmp` tmpfs, `--pids-limit 512`, memory and CPU caps (`QAFG_SANDBOX_MEMORY`, `QAFG_SANDBOX_CPUS`, swap equals memory), the server's own uid, and exactly one bind mount (the run's temp directory at `/work`). Only an explicit environment is passed, so none of the server's environment (API keys) reaches generated code.
+- **Network deviates from the original audit text.** The audit asked for `--network=none` during tests, but the tests must reach the site under test, so the test phase keeps network (`bridge`) by default. That means generated code can still make outbound requests (exfiltration, internal-network probing). `QAFG_SANDBOX_TEST_NETWORK=none` removes the network for runs that need none. Closing this properly needs an egress allow-list (only the target host), which is not built.
+- **Fail closed.** With the sandbox on, JavaScript, TypeScript, Java and C# runs are refused with a message; they are not run on the host. Headed mode is not available (no display); runs are headless.
+- **Cleanup.** Each container is named and removed with `docker rm -f` after its phase, on success, failure or timeout (`QAFG_SANDBOX_PHASE_TIMEOUT_MS`, default 10 min). Killing the `docker run` client does not stop its container, so the removal goes around the run scope. If the run deadline fires between phases, the container is removed once its phase returns.
+- **Not verified:** nothing here was run against a real Docker daemon (none was available). Tested with a fake `docker` on `PATH` that records its calls. The image build, `pip`/browser install inside the container, Chromium in a read-only container, bind-mount ownership and the deadline path are untested.
+- Does not apply when the server itself runs in the provided Docker image (no Docker socket there); use it on a host with Docker.
+
 ### 🔲 To do
 
 | ID | Severity | Item |
 |----|----------|------|
-| C3 | Critical | **Sandbox test execution** — run each language subprocess in a Docker container (`--network=none` for test phase, network only for install/browser-download phase). Blocks true public deployment. |
+| C3 | Critical | Remaining: sandbox runners for JavaScript/TypeScript, Java and C#; an egress allow-list for the test phase; verify against a real Docker daemon. |
 
 ---
 
