@@ -38,11 +38,11 @@ const ext = (p) => (p.includes(".") ? p.slice(p.lastIndexOf(".") + 1).toLowerCas
 const REDACTIONS = [
   // A private key block, or (if it is cut off) everything after its header up to a cap.
   /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]{0,10000}?-----END [A-Z ]*PRIVATE KEY-----|[\s\S]{0,10000})/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\bgh[pousr]_[A-Za-z0-9]{30,}\b/g,
-  /\bsk-[A-Za-z0-9_-]{20,}\b/g,
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g,
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, // JWT
+  /(?<![A-Za-z0-9])AKIA[0-9A-Z]{16}(?![A-Za-z0-9])/g,
+  /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{30,}/g,
+  /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/g,
+  /(?<![A-Za-z0-9])xox[abprs]-[A-Za-z0-9-]{10,}/g,
+  /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, // JWT
 ];
 const KEYED_SECRET = /((?:api[_-]?key|secret|token|passw(?:or)?d|pwd|private[_-]?key|authorization|client[_-]?secret|connection[_-]?string)["']?\s*[:=]\s*)(["'`])[^"'`\n]{6,2000}\2/gi;
 

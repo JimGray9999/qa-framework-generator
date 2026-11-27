@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { resolveClaudeBin, spawnClaude } from "./claudeBin.js";
 import { isolatedClaudeSpec } from "./claudeIsolation.js";
+import { envInt, MAX_TIMER_MS } from "./config.js";
 
 // Errors the user can act on (missing key, CLI not installed) are safe to show verbatim.
 function exposed(message) {
@@ -123,9 +124,17 @@ async function callClaudeLocal({ userPrompt, system = SYSTEM_PROMPT, isolated = 
       });
       let stdout = "";
       let stderr = "";
+      // A CLI that never answers (stalled network, a prompt it cannot act on) must not pin the
+      // request, the process and the scratch directory forever.
+      const timeoutMs = envInt("QAFG_CLAUDE_TIMEOUT_MS", 300_000, { max: MAX_TIMER_MS });
+      const timer = setTimeout(() => {
+        try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+        reject(exposed(`The local Claude CLI did not respond within ${Math.round(timeoutMs / 1000)} seconds and was stopped. Try again, or choose a different provider.`));
+      }, timeoutMs);
       proc.stdout.on("data", (d) => (stdout += d.toString()));
       proc.stderr.on("data", (d) => (stderr += d.toString()));
       proc.on("error", (err) => {
+        clearTimeout(timer);
         if (err.code === "ENOENT") {
           reject(exposed("Local Claude CLI not found. Install Claude Code (https://claude.com/claude-code), set CLAUDE_BIN to its full path, or pick a different provider."));
         } else {
@@ -133,6 +142,7 @@ async function callClaudeLocal({ userPrompt, system = SYSTEM_PROMPT, isolated = 
         }
       });
       proc.on("close", (code) => {
+        clearTimeout(timer);
         if (code !== 0) {
           reject(new Error(`claude CLI exited ${code}: ${stderr || stdout}`));
         } else {

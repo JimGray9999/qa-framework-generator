@@ -91,6 +91,24 @@ Security properties (do not weaken):
   budget and the whole prompt has a hard cap (`DIGEST_LIMITS`).
 - Uploads use a per-route raw body parser mounted after auth and the rate limiter, so unauthenticated requests are never buffered.
 
+### Live pages and `/api/generate` (same threat model)
+
+Text from a live page is attacker-controlled too, so the manual and agent paths that analyse one are hardened alike:
+- **Isolation:** when a live page was fetched, the prompt runs `isolated` (the local Claude CLI gets no tools, MCP or hooks).
+  `QAFG_ISOLATE_LIVE_PAGES=false` turns this off for live pages only (e.g. Windows with only the npm `.cmd` wrapper, which
+  isolated mode refuses); repository content is always isolated and has no such switch.
+- **Page text** (`analyzePage`): control characters stripped, whitespace collapsed, credential-like strings redacted, each field
+  length-capped, the fence marker removed, and the block fenced as untrusted data. Extraction patterns are bounded (a hostile page
+  with 17,000 unclosed `<input ` tags took the old pattern over a second; the new one tens of ms) and at most 120 KB is scanned.
+- **`/api/generate` input** (audit item L5): `normalizeGenerateInput` accepts only a known language/framework pair and a real
+  http(s) URL without credentials, canonicalised (quotes/newlines percent-encoded) before it reaches a prompt or generated code.
+- **Model output** (`agents/generated.js`, shared with the Engineer agent): file names/paths must stay inside the project (no `..`,
+  absolute or drive paths, backslashes or control characters), no duplicates, bounded counts and sizes; only `name/path/content` are kept.
+- **Errors:** the generate route returns only deliberately user-facing messages; provider stderr and internals stay in the log.
+- **Local CLI timeout:** `QAFG_CLAUDE_TIMEOUT_MS` (default 5 min) kills a CLI that never answers, so it cannot pin a request or a scratch dir.
+  Observed on `claude` 2.1.332: in isolated mode a prompt that asks the model to use a tool it does not have sometimes makes the CLI
+  stall instead of answering (cause unknown); the timeout bounds it.
+
 ---
 
 ## HTTP API
@@ -228,6 +246,7 @@ Items completed are on `sec/auth-and-path-traversal` (PR open). Items below are 
 - [x] **C2** `npm install --ignore-scripts`; static scan (`scanGeneratedFiles`) rejects lifecycle hooks, shell-exec patterns, MSBuild `<Exec>`, curl/wget
 - [x] **M3/M4** Subprocess hard-kill timeout (`runWithTimeout`, 10 min, env-configurable); tempdir `rm -rf` in `finally`
 - [x] **M5 (partial)** Run-tests endpoint now returns generic "Test run failed" instead of raw error message
+- [x] **L5** `/api/generate` validates `language`/`framework` against the known matrix and canonicalises the URL (`normalizeGenerateInput`).
 - [x] **H4** Rate limiting via in-house `middleware/rateLimit.js` (per-IP fixed window, separate bucket per route group): `/api/agents/*` 15/min, `/api/generate` 10/min, `/api/run-tests` 5/min. Env overrides: `QAFG_{AGENT,GENERATE,RUNTESTS}_RATE_MAX` and `_RATE_WINDOW_MS` (validated by `config.js`: positive integers, window up to 2^31-1 ms; invalid values warn and fall back to the defaults). Routing is case-sensitive and the limiters sit behind `requireAuth`. Concurrent test runs are capped separately (`middleware/concurrencyGate.js`, `QAFG_MAX_CONCURRENT_RUNS`, default 2): extra requests get a 429. Every run executes under one deadline (`processScope.js`, `QAFG_RUN_TIMEOUT_MS`, default 20 min, covering install/download/build/test for every stack). Subprocesses are tracked per run (process group on POSIX, `taskkill /T` on Windows); on deadline, failure or timeout the whole tree is killed and reaped before the slot is released, and a cancelled run cannot start new processes. A run whose client disconnects keeps its slot until it finishes or hits the deadline. Windows tree-kill is untested.
 
 ### 🔲 To do
@@ -237,11 +256,10 @@ Items completed are on `sec/auth-and-path-traversal` (PR open). Items below are 
 | C3 | Critical | **Sandbox test execution** — run each language subprocess in a Docker container (`--network=none` for test phase, network only for install/browser-download phase). Blocks true public deployment. |
 | H3 | High | **API key storage** — move from `localStorage` to `sessionStorage`; warn user if page is not on `localhost`; scrub key from state on modal close without save. |
 | M1 | Medium | **Helmet** — add `helmet()` middleware with a strict CSP for production builds. |
-| M5 | Medium | **Error message sanitisation** — audit all remaining `res.status(500).json({ error: error.message })` calls and replace with generic messages; log real errors server-side only. |
+| M5 | Medium | **Error message sanitisation** — done for `/api/generate` and the agent routes; audit the remaining `res.status(500).json({ error: error.message })` calls (e.g. `/api/providers`, `/api/download-zip`) and replace with generic messages; log real errors server-side only. |
 | M6 | Medium | **Debug log cleanup** — gate `console.log("Anthropic API key: ✓ loaded")` and similar startup logs behind `DEBUG=qafg:*`. |
 | L3 | Low | **`archiver` error safety** — `archive.on('error')` re-throws inside an async callback; wrap to respond cleanly instead of crashing the process. |
 | L4 | Low | **Cache provider detection** — `detectProviders()` spawns `claude --version` on every `/api/providers` poll; cache result for 30 s. |
-| L5 | Low | **Input allow-lists** — validate `language` and `framework` from `/api/generate` against known enum values before they enter the prompt. |
 | L6 | Low | **File viewer XSS audit** — confirm no `dangerouslySetInnerHTML` or unsanitised render of generated file content in the React viewer; add a test assertion. |
 
 ---

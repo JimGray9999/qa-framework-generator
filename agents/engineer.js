@@ -1,5 +1,6 @@
 import { runAgent, asArray, str, need, safe } from "./runAgent.js";
 import { repoContextToPrompt } from "./repoAnalyst.js";
+import { validateGeneratedFiles } from "./generated.js";
 
 export async function runEngineer({ request, testPlan, architecture, pageAnalysis, repoContext, langPrompt, generate, provider, apiKey, onEvent }) {
   const plan = testPlan.scenarios
@@ -69,6 +70,7 @@ Use \\n for newlines, \\" for quotes. Output ONLY valid JSON.`;
         need(typeof f.content === "string", `file #${i + 1} ("${safe(f.name)}") has no string "content"`);
         return { name: str(f.name, 160), path: str(f.path, 300), content: f.content };
       });
+      validateGeneratedFiles(out); // paths stay inside the project, sizes bounded, no duplicates
       // ...but a test file that an approved scenario is mapped to must actually contain a test.
       for (const [i, f] of out.entries()) {
         const full = norm(`${f.path}${f.name}`);
