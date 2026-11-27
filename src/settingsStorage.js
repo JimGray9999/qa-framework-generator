@@ -4,6 +4,13 @@
 const KEY = 'qafg.settings';
 const DEFAULTS = { provider: 'claude-local', apiKey: '' };
 
+// Reading `window.localStorage` can itself throw (a SecurityError when storage is denied), before any
+// helper below gets a chance to catch. Get each store through this, which returns null when blocked;
+// settings then live in memory only.
+export function safeStorage(win, name) {
+  try { return win?.[name] ?? null; } catch { return null; }
+}
+
 const read = (store) => {
   try { const raw = store.getItem(KEY); return raw ? JSON.parse(raw) : null; } catch { return null; }
 };

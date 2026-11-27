@@ -2,10 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useFrameworkStorage } from './useFrameworkStorage';
 import AgentPipeline from './AgentPipeline';
 
-import { loadSettings as loadStoredSettings, saveSettings as saveStoredSettings, isLocalHost } from './settingsStorage';
+import { loadSettings as loadStoredSettings, saveSettings as saveStoredSettings, isLocalHost, safeStorage } from './settingsStorage';
 
 // API key in sessionStorage, everything else in localStorage (audit H3; see settingsStorage.js).
-const loadSettings = () => loadStoredSettings(localStorage, sessionStorage);
+const loadSettings = () => loadStoredSettings(safeStorage(window, 'localStorage'), safeStorage(window, 'sessionStorage'));
 
 // ─── Inline SVG icons ─────────────────────────────────────────────────────────
 
@@ -175,7 +175,7 @@ const QAFrameworkGenerator = () => {
 
   const saveSettings = (next) => {
     setSettings(next);
-    saveStoredSettings(next, localStorage, sessionStorage);
+    saveStoredSettings(next, safeStorage(window, 'localStorage'), safeStorage(window, 'sessionStorage'));
   };
 
   const [isGenerating, setIsGenerating] = useState(false);

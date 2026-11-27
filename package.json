@@ -13,7 +13,7 @@
     "docker:build": "docker compose build",
     "docker:up": "docker compose up",
     "docker:down": "docker compose down",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
