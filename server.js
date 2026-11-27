@@ -19,7 +19,7 @@ import { normalizeRequest, normalizeGenerateInput, agentError } from "./agents/c
 import { validateGeneratedFiles, resolveGeneratedPath } from "./agents/generated.js";
 import { redact } from "./repo/digest.js";
 import { debugLog } from "./debug.js";
-import { sandboxMode, sandboxLimits, checkSandboxReady, runPhase, SANDBOX_PHASE_TIMEOUT_MS } from "./sandbox.js";
+import { sandboxMode, sandboxLimits, checkSandboxReady, runPhase, SANDBOX_PHASE_TIMEOUT_MS, validateRequirements, findLocalTarget, readBoundedJson, capReport } from "./sandbox.js";
 import { securityHeaders } from "./middleware/securityHeaders.js";
 import { runIntake } from "./agents/intake.js";
 import { runTestPlanner } from "./agents/testPlanner.js";
@@ -940,6 +940,10 @@ app.post("/api/run-tests", async (req, res) => {
       if (fileName.endsWith('.csproj') && !stagedCsprojPath) stagedCsprojPath = fullPath;
     }
 
+    // Decided before anything runs (and before the report annotation below): an invalid QAFG_SANDBOX
+    // fails the request instead of falling back to running on the host.
+    const sandboxed = sandboxMode() === 'docker';
+
     // Set up SSE for streaming output
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -951,7 +955,8 @@ app.post("/api/run-tests", async (req, res) => {
       if (res.writableEnded || res.destroyed) return;
       // Annotate report payloads with the browser + headed mode so the UI can show them
       if (type === 'report' && data && typeof data === 'object') {
-        data = { ...data, browser: selectedBrowser, headed, slowMo: slowMoMs };
+        // The sandbox is always headless with no slow motion; report what actually ran.
+        data = { ...data, browser: selectedBrowser, headed: sandboxed ? false : headed, slowMo: sandboxed ? 0 : slowMoMs };
       }
       res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
     };
@@ -960,7 +965,6 @@ app.post("/api/run-tests", async (req, res) => {
     // every subprocess the run started before it settles, whatever the outcome.
     // Sandbox mode is decided before anything runs. Languages without a sandbox runner are refused
     // rather than quietly run on the host.
-    const sandboxed = sandboxMode() === 'docker';
     if (sandboxed && language !== 'python') {
       const e = new Error(`Sandboxed runs support Python only so far, and this framework is ${language}. Set QAFG_SANDBOX=off to run it on this machine.`);
       e.code = 'SANDBOX'; e.expose = true;
@@ -1195,18 +1199,36 @@ async function runPythonTests(tempDir, files, selectedBrowser, headed, slowMoMs,
 // with network, then the test phase (network per QAFG_SANDBOX_TEST_NETWORK). Always headless: a
 // container has no display. The run's temp directory is the only thing shared with the host.
 async function runPythonSandboxed(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent) {
+  // Refuse early what cannot work or cannot be made safe, before any container starts.
+  const localTarget = findLocalTarget(files);
+  if (localTarget) {
+    const e = new Error(`This framework targets ${localTarget}. Inside the sandbox "localhost" is the container itself, so it cannot reach an app running on your machine. Use a URL the container can reach, or set QAFG_SANDBOX=off to run it on this machine.`);
+    e.code = 'SANDBOX'; e.expose = true;
+    throw e;
+  }
+  const reqFile = files.find(f => f.name === 'requirements.txt' && !f.path);
+  validateRequirements(reqFile?.content);
+
   await checkSandboxReady();
   const limits = sandboxLimits();
   const timeoutMs = SANDBOX_PHASE_TIMEOUT_MS();
   if (headed) sendEvent('status', 'Headed mode is not available in the sandbox; running headless.');
 
-  const baseEnv = { HOME: '/work/.home', PIP_DISABLE_PIP_VERSION_CHECK: '1', PLAYWRIGHT_BROWSERS_PATH: '/work/.browsers' };
-
+  // Setup is the network-enabled phase, so it must not execute anything from the generated project:
+  //  - it starts in "/" with `python -I` (isolated: no current-directory or user-site imports), so a
+  //    generated venv.py, pip.py or playwright.py in the workspace is never loaded;
+  //  - the venv and browser directories are deleted first, so staged files cannot pre-plant them;
+  //  - pip runs with --isolated (ignores config files and PIP_* variables) and --only-binary=:all:
+  //    (wheels only, so no setup.py of a dependency runs at install time);
+  //  - requirements.txt was validated above (plain requirement lines only).
+  // Egress is NOT restricted in this phase (only the packages index and browser CDN are needed); an
+  // allow-list for it is not built yet.
   sendEvent('status', 'Sandbox: installing dependencies and browser...');
   const installCode = await runPhase({
-    workDir: tempDir, limits, timeoutMs, network: 'bridge', env: baseEnv,
+    workDir: tempDir, limits, timeoutMs, network: 'bridge', containerCwd: '/',
+    env: { HOME: '/tmp/home', PLAYWRIGHT_BROWSERS_PATH: '/work/.browsers', PIP_DISABLE_PIP_VERSION_CHECK: '1' },
     // The browser name is passed as an argument ($1), never spliced into the script.
-    command: ['sh', '-c', 'set -e; python3 -m venv /work/venv; /work/venv/bin/pip install -r requirements.txt; /work/venv/bin/python -m playwright install "$1"', 'sh', selectedBrowser],
+    command: ['sh', '-c', 'set -e; mkdir -p /tmp/home; rm -rf /work/venv /work/.browsers /work/.home; python3 -I -m venv /work/venv; /work/venv/bin/python -I -m pip --isolated install --only-binary=:all: --no-input -r /work/requirements.txt; /work/venv/bin/python -I -m playwright install "$1"', 'sh', selectedBrowser],
     onOutput: (t) => sendEvent('pip', t),
   });
   if (installCode !== 0) throw new Error(`Sandbox install failed with code ${installCode}`);
@@ -1214,17 +1236,25 @@ async function runPythonSandboxed(tempDir, files, selectedBrowser, headed, slowM
   sendEvent('status', `Sandbox: running tests on ${selectedBrowser} (${limits.testNetwork === 'none' ? 'no network' : 'network enabled'})...`);
   const testCode = await runPhase({
     workDir: tempDir, limits, timeoutMs, network: limits.testNetwork,
-    env: { ...baseEnv, PYTHONUNBUFFERED: '1', SLOWMO: '0', BROWSER: selectedBrowser, HEADED: '0' },
+    env: { HOME: '/work/.home', PLAYWRIGHT_BROWSERS_PATH: '/work/.browsers', PYTHONUNBUFFERED: '1', SLOWMO: '0', BROWSER: selectedBrowser, HEADED: '0' },
     command: ['/work/venv/bin/python', '-m', 'pytest', '-v', '--tb=short', `--browser=${selectedBrowser}`,
       '--json-report', '--json-report-file=/work/report.json', '--json-report-indent=2'],
     onOutput: (t) => sendEvent('test', t),
-  }).catch((err) => { sendEvent('error', err.message); return -1; });
+  }).catch((err) => {
+    // A failed cleanup must stop the run, not be reported as a failed test.
+    if (/confirm that the sandbox container was removed/.test(err.message)) throw err;
+    sendEvent('error', err.message);
+    return -1;
+  });
 
+  // The report was written by code that ran in the container: read it as untrusted (no links, regular
+  // file only, size and shape capped).
   try {
-    const report = JSON.parse(await readFile(join(tempDir, 'report.json'), 'utf-8'));
-    sendEvent('report', normalizePytestReport(report));
+    const report = await readBoundedJson(join(tempDir, 'report.json'));
+    sendEvent('report', capReport(normalizePytestReport(report)));
   } catch (e) {
     console.log('Could not read JSON report:', e.message);
+    if (e.code === 'SANDBOX') sendEvent('error', e.message);
   }
   sendEvent('complete', { exitCode: testCode });
 }
