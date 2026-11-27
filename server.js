@@ -515,12 +515,25 @@ async function analyzePage(targetUrl) {
     // Tags are matched first (bounded), then attributes are read from the tag text in priority
     // order. (?<![\w-]) keeps `data-id` / `xid` from counting as `id`.
     const attr = (tag, name) => tag.match(new RegExp(`(?<![\\w-])${name}\\s*=\\s*"([^"]{1,100})"`, 'i'))?.[1];
-    const tagAttrs = (re, names, max, len) => [...html.matchAll(re)].slice(0, max)
-      .map(m => { for (const n of names) { const v = attr(m[0], n); if (v) return pageText(v, len); } return ''; }).filter(Boolean);
-    pageData.inputs = tagAttrs(/<input\b[^>]{0,500}>/gi, ['id', 'name', 'placeholder', 'aria-label'], 10, 60);
-    pageData.forms = tagAttrs(/<form\b[^>]{0,500}>/gi, ['id', 'name', 'action'], 5, 80);
-    pageData.buttons = [...html.matchAll(/<button\b[^>]{0,300}>([^<]{1,60})<\/button>/gi)].slice(0, 10).map(m => m[1].trim()).filter(b => b.length < 30).map(b => pageText(b, 40)).filter(Boolean);
-    pageData.links = [...html.matchAll(/<a\b[^>]{0,300}?href="[^"]{1,300}"[^>]{0,300}>([^<]{1,60})<\/a>/gi)].slice(0, 5).map(m => m[1].trim()).filter(l => l.length < 30).map(l => pageText(l, 40)).filter(Boolean);
+    // Collect USABLE values until `max` are found (a tag without a usable value does not use up a
+    // slot), examining at most 500 matches so a page full of unnamed tags stays cheap.
+    const collect = (re, pick, max) => {
+      const out = [];
+      let examined = 0;
+      for (const m of html.matchAll(re)) {
+        if (++examined > 500) break;
+        const v = pick(m);
+        if (v) out.push(v);
+        if (out.length >= max) break;
+      }
+      return out;
+    };
+    const byAttr = (names, len) => (m) => { for (const n of names) { const v = attr(m[0], n); if (v) return pageText(v, len); } return ''; };
+    const shortText = (m) => { const t = m[1].trim(); return t.length < 30 ? pageText(t, 40) : ''; };
+    pageData.inputs = collect(/<input\b[^>]{0,500}>/gi, byAttr(['id', 'name', 'placeholder', 'aria-label'], 60), 10);
+    pageData.forms = collect(/<form\b[^>]{0,500}>/gi, byAttr(['id', 'name', 'action'], 80), 5);
+    pageData.buttons = collect(/<button\b[^>]{0,300}>([^<]{1,60})<\/button>/gi, shortText, 10);
+    pageData.links = collect(/<a\b[^>]{0,300}?href="[^"]{1,300}"[^>]{0,300}>([^<]{1,60})<\/a>/gi, shortText, 5);
     pageData.fetched = true;
 
     pageAnalysis = `
