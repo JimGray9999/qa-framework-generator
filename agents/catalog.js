@@ -28,6 +28,15 @@ export function looksLikeRepoUrl(url) {
   return parts.length >= 2 && !GITHUB_RESERVED.has(parts[0].toLowerCase());
 }
 
+// The canonical URL is embedded in prompts and, through them, inside string literals of
+// generated code in several languages ('...' in JS/TS, "..." in Python/Java/C#, `...` templates).
+// URL.toString() keeps characters that break out of those literals (an apostrophe is valid in
+// a path segment, `$` and `|` are left alone), so they are percent-encoded. The encoded form
+// addresses the same resource on any normal server.
+export function literalSafeUrl(urlString) {
+  return urlString.replace(/['"`\\$|^{}<>]/g, (ch) => "%" + ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0"));
+}
+
 // Parse a user-supplied URL for the app under test. Always returns the canonical string form
 // (so quotes, newlines and other tricks cannot ride into prompts or generated code), or "" when
 // empty is allowed.
@@ -48,7 +57,7 @@ export function parseTargetUrl(value, { allowEmpty = false, rejectRepoLinks = fa
   if (rejectRepoLinks && looksLikeRepoUrl(url)) {
     throw agentError('That is a GitHub repository URL, not the running app. Use "Attach code" for the repository and give the URL where the app runs.');
   }
-  return url.toString();
+  return literalSafeUrl(url.toString());
 }
 
 // Validation for the manual /api/generate path: language and framework must be known values

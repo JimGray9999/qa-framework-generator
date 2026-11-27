@@ -16,7 +16,7 @@ import { createConcurrencyGate } from "./middleware/concurrencyGate.js";
 import { findPythons, createVenvWithFallback, clearPythonCache, pythonCandidates, PYTHON_NOT_FOUND_MESSAGE, VENV_FAILED_MESSAGE } from "./pythonBin.js";
 import { extractJSON } from "./agents/json.js";
 import { normalizeRequest, normalizeGenerateInput, agentError } from "./agents/catalog.js";
-import { validateGeneratedFiles } from "./agents/generated.js";
+import { validateGeneratedFiles, resolveGeneratedPath } from "./agents/generated.js";
 import { redact } from "./repo/digest.js";
 import { runIntake } from "./agents/intake.js";
 import { runTestPlanner } from "./agents/testPlanner.js";
@@ -723,6 +723,12 @@ function resolveTarget(request, repoContext) {
 
 // Only a URL the user gave is fetched. A repo-derived or default localhost URL is not a
 // public page (and the SSRF guard would block it anyway), so say so instead.
+// The plan and architecture that come back from the client were derived from earlier model
+// output that saw live-page text, so they are untrusted whether or not THIS request's fetch
+// succeeds (the analysis cache expires and the site may be down). A user-supplied URL means a
+// live page was in play for the whole run, so every downstream stage stays isolated.
+const downstreamLiveTaint = (request) => ISOLATE_LIVE_PAGES && request.targetUrlSource === 'user';
+
 async function pageAnalysisFor(request) {
   if (request.targetUrlSource === 'user') return analyzePage(request.targetUrl);
   const pageData = { fetched: false, title: '', inputs: [], buttons: [], links: [], forms: [] };
@@ -750,9 +756,9 @@ app.post('/api/agents/architect', agentRoute(async (body) => {
   const repoContext = readRepoContext(body);
   const request = resolveTarget(normalizeRequest(body.request, { hasRepo: !!repoContext }), repoContext);
   const testPlan = validateApprovedPlan(body.testPlan);
-  const { pageData, pageAnalysis } = await pageAnalysisFor(request);
+  const { pageAnalysis } = await pageAnalysisFor(request);
   const requiredFiles = getLanguagePrompt(request.language, request.targetUrl).fileList;
-  const architecture = await runArchitect({ request, testPlan, pageAnalysis, repoContext, requiredFiles, ...agentDeps(body, { untrusted: !!repoContext || (ISOLATE_LIVE_PAGES && pageData.fetched) }) });
+  const architecture = await runArchitect({ request, testPlan, pageAnalysis, repoContext, requiredFiles, ...agentDeps(body, { untrusted: !!repoContext || downstreamLiveTaint(request) }) });
   return { architecture };
 }));
 
@@ -766,9 +772,9 @@ app.post('/api/agents/engineer', agentRoute(async (body) => {
   } catch (e) {
     throw Object.assign(new Error(`Invalid architecture: ${e.message}`), { expose: true });
   }
-  const { pageData, pageAnalysis } = await pageAnalysisFor(request);
+  const { pageAnalysis } = await pageAnalysisFor(request);
   const langPrompt = getLanguagePrompt(request.language, request.targetUrl);
-  const result = await runEngineer({ request, testPlan, architecture, pageAnalysis, repoContext, langPrompt, ...agentDeps(body, { untrusted: !!repoContext || (ISOLATE_LIVE_PAGES && pageData.fetched) }) });
+  const result = await runEngineer({ request, testPlan, architecture, pageAnalysis, repoContext, langPrompt, ...agentDeps(body, { untrusted: !!repoContext || downstreamLiveTaint(request) }) });
   return { content: [{ text: JSON.stringify({ files: result.files, summary: result.summary }) }], warnings: result.warnings };
 }));
 
@@ -792,10 +798,18 @@ const isDocker = process.env.NODE_ENV === 'production' || process.env.DOCKER ===
 
 // Download as ZIP endpoint
 app.post("/api/download-zip", async (req, res) => {
-  const { files } = req.body;
-  
-  if (!files || !Array.isArray(files)) {
+  const { files: rawFiles } = req.body;
+
+  if (!rawFiles || !Array.isArray(rawFiles)) {
     return res.status(400).json({ error: "No files provided" });
+  }
+
+  // Same validation and the same destination rule as staging for a test run (agents/generated.js).
+  let files;
+  try {
+    files = validateGeneratedFiles(rawFiles);
+  } catch (e) {
+    return res.status(400).json({ error: `Invalid files: ${e.message}` });
   }
 
   try {
@@ -803,106 +817,41 @@ app.post("/api/download-zip", async (req, res) => {
     res.setHeader('Content-Disposition', 'attachment; filename=qa-framework.zip');
 
     const archive = archiver('zip', { zlib: { level: 9 } });
-    
+
     archive.on('error', (err) => {
       throw err;
     });
 
     archive.pipe(res);
 
-    // Add each file to the ZIP
     for (const file of files) {
-      let filePath = (file.path || '').replace(/^\/+|\/+$/g, '');
-      let fileName = file.name;
-
-      // Handle paths in filename
-      if (fileName.includes('/')) {
-        const parts = fileName.split('/');
-        fileName = parts.pop();
-        const fileNamePath = parts.join('/');
-        if (!filePath) {
-          filePath = fileNamePath;
-        }
-      }
-
-      // Zip-slip guard: reject absolute, traversal, and null-byte entries.
-      const entryPath = filePath ? `${filePath}/${fileName}` : fileName;
-      if (
-        entryPath.includes('\0') ||
-        entryPath.startsWith('/') ||
-        entryPath.split('/').some((seg) => seg === '..')
-      ) {
-        console.warn('Skipping unsafe zip entry:', entryPath);
-        continue;
-      }
-
-      archive.append(file.content, { name: entryPath });
+      archive.append(file.content, { name: resolveGeneratedPath(file).full });
     }
 
     await archive.finalize();
   } catch (error) {
     console.error("ZIP error:", error);
     if (!res.headersSent) {
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: 'Could not create the zip.' });
     }
   }
 });
 
-// Detect language from files (C# takes precedence when present so we don't run pip for C#/Playwright)
-function detectLanguage(files) {
-  const hasCSharp = files.some((f) => {
-    const n = (f.name || '').toLowerCase();
-    const p = (f.path || '').toLowerCase();
-    const full = (p + n);
-    return n.endsWith('.csproj') || full.includes('.csproj') || n.endsWith('.cs') || full.endsWith('.cs');
-  });
-  if (hasCSharp) return 'csharp';
-
-  const hasJava = files.some((f) => {
-    const n = (f.name || '').toLowerCase();
-    return n === 'pom.xml' || n.endsWith('.java');
-  });
-  if (hasJava) return 'java';
-
-  const hasTypeScript = files.some((f) => {
-    const n = (f.name || '').toLowerCase();
-    return n === 'tsconfig.json' || n === 'playwright.config.ts' || n.endsWith('.ts');
-  });
-  if (hasTypeScript) return 'typescript';
-
-  const hasJavaScript = files.some((f) => {
-    const n = (f.name || '').toLowerCase();
-    return n === 'package.json' || n === 'playwright.config.js' || n === 'playwright.config.mjs';
-  });
-  if (hasJavaScript) return 'javascript';
-
-  const hasPython = files.some((f) => {
-    const n = (f.name || '').toLowerCase();
-    const p = (f.path || '').toLowerCase();
-    const full = (p + n).toLowerCase();
-    return n.endsWith('.py') || full.endsWith('.py') || n === 'requirements.txt' || full.includes('requirements.txt');
-  });
-  if (hasPython) return 'python';
-
-  return 'python'; // Default fallback
-}
-
-// Cap on simultaneously executing test runs. A per-minute rate limit cannot bound this:
-// each run can last up to QAFG_TEST_TIMEOUT_MS (10 min), so a handful of requests per
-// minute would otherwise pile up dozens of browsers and package installs.
-const testRunGate = createConcurrencyGate(envInt('QAFG_MAX_CONCURRENT_RUNS', 2));
-
-// Upper bound on a whole run (dependency install, browser download, build AND tests).
-// QAFG_TEST_TIMEOUT_MS only covers the final test process; setup phases had no limit.
-const RUN_DEADLINE_MS = envInt('QAFG_RUN_TIMEOUT_MS', 20 * 60 * 1000, { max: MAX_TIMER_MS });
-
 // Run tests endpoint
 app.post("/api/run-tests", async (req, res) => {
-  const { files, browser = 'chromium', headed = false, slowMo = 0 } = req.body;
+  const { files: rawFiles, browser = 'chromium', headed = false, slowMo = 0 } = req.body;
   const slowMoMs = Math.max(0, Math.min(5000, parseInt(slowMo, 10) || 0));
 
-  if (!files || !Array.isArray(files)) {
+  if (!rawFiles || !Array.isArray(rawFiles)) {
     return res.status(400).json({ error: "No files provided" });
+  }
+
+  // Canonical files: the same validation and destination rule as /api/generate and the zip export.
+  let files;
+  try {
+    files = validateGeneratedFiles(rawFiles);
+  } catch (e) {
+    return res.status(400).json({ error: `Invalid files: ${e.message}` });
   }
 
   // Validate browser option
@@ -942,24 +891,10 @@ app.post("/api/run-tests", async (req, res) => {
     // Write all files
     let stagedCsprojPath = null;
     for (const file of files) {
-      // Handle paths that might be in the filename itself
-      let fileName = file.name;
-      let filePath = (file.path || '').replace(/^\/+|\/+$/g, ''); // Clean path
-
-      // If filename contains a path (e.g., "pages/base_page.py"), extract it
-      if (fileName.includes('/')) {
-        const parts = fileName.split('/');
-        fileName = parts.pop();
-        const fileNamePath = parts.join('/');
-
-        // Only use the filename's path if file.path is empty or matches
-        if (!filePath || filePath === fileNamePath || fileNamePath.startsWith(filePath)) {
-          filePath = fileNamePath;
-        } else if (!fileNamePath.startsWith(filePath)) {
-          // Paths are different and don't overlap, join them
-          filePath = join(filePath, fileNamePath);
-        }
-      }
+      // Files are canonical ({name} is a file name, {path} a clean relative directory), so the
+      // destination is exactly what the validator and the zip export computed.
+      const fileName = file.name;
+      const filePath = file.path.replace(/\/$/, '');
 
       // Path-traversal guard: reject absolute paths, '..' escapes, and null bytes.
       if (fileName.includes('\0') || filePath.includes('\0')) {

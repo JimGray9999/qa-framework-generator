@@ -1,6 +1,6 @@
 import { runAgent, asArray, str, need, safe } from "./runAgent.js";
 import { repoContextToPrompt } from "./repoAnalyst.js";
-import { validateGeneratedFiles } from "./generated.js";
+import { validateGeneratedFiles, resolveGeneratedPath } from "./generated.js";
 
 export async function runEngineer({ request, testPlan, architecture, pageAnalysis, repoContext, langPrompt, generate, provider, apiKey, onEvent }) {
   const plan = testPlan.scenarios
@@ -63,14 +63,10 @@ Use \\n for newlines, \\" for quotes. Output ONLY valid JSON.`;
     validate: (o) => {
       const raw = asArray(o.files);
       need(raw.length >= 3, `expected at least 3 files, got ${raw.length}`);
-      const out = raw.map((f, i) => {
-        need(f && typeof f.name === "string" && f.name.trim(), `file #${i + 1} has no "name"`);
-        // Empty content is legitimate for package markers (e.g. an empty pages/__init__.py),
-        // but it must be a string.
-        need(typeof f.content === "string", `file #${i + 1} ("${safe(f.name)}") has no string "content"`);
-        return { name: str(f.name, 160), path: str(f.path, 300), content: f.content };
-      });
-      validateGeneratedFiles(out); // paths stay inside the project, sizes bounded, no duplicates
+      raw.forEach((f, i) => need(f && typeof f.name === "string" && f.name.trim(), `file #${i + 1} has no "name"`));
+      // One resolver decides each file's destination (paths stay inside the project, Windows-safe,
+      // no duplicates); the canonical result is what the Engineer returns.
+      const out = validateGeneratedFiles(raw);
       // ...but a test file that an approved scenario is mapped to must actually contain a test.
       for (const [i, f] of out.entries()) {
         const full = norm(`${f.path}${f.name}`);
@@ -81,10 +77,12 @@ Use \\n for newlines, \\" for quotes. Output ONLY valid JSON.`;
     },
   });
 
-  // Traceability check: tell the user if the engineer deviated from the architecture.
-  const produced = new Set(result.files.map((f) => `${f.path || ""}${f.name}`));
+  // Traceability check: tell the user if the engineer deviated from the architecture. Planned and
+  // produced files are compared by the destination the resolver gives them.
+  const planned = (f) => { const r = resolveGeneratedPath(f); return r.error ? `${f.path || ""}${f.name}` : r.full; };
+  const produced = new Set(result.files.map((f) => `${f.path}${f.name}`));
   result.warnings = architecture.files
-    .map((f) => `${f.path || ""}${f.name}`)
+    .map(planned)
     .filter((p) => !produced.has(p))
     .map((p) => `Planned file not generated: ${p}`);
   return result;

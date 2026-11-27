@@ -84,6 +84,12 @@ export function assertNotCancelled() {
   if (storage.getStore()?.closed) throw new Error("Run was cancelled; not starting a new process");
 }
 
+// For children started outside a run scope (e.g. the local Claude CLI): after spawning one with
+// `detached: true` on POSIX (its own process group), register it so killTree signals the group.
+export function markOwnGroup(child) {
+  if (!IS_WIN) ownGroup.add(child);
+}
+
 export class RunDeadlineError extends Error {
   constructor(ms) {
     super(`The run exceeded its ${Math.round(ms / 60000 * 10) / 10}-minute limit and was stopped.`);

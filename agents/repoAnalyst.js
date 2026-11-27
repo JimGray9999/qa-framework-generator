@@ -1,5 +1,6 @@
 import { runAgent, asArray, need } from "./runAgent.js";
 import { redact } from "../repo/digest.js";
+import { literalSafeUrl } from "./catalog.js";
 
 const SYSTEM = `You are the Repo Analyst Agent in a QA automation framework generator.
 You read a digest of a web application's source code and explain what a tester needs to know to automate it: its pages and routes, forms and key UI elements, how authentication works, how to run it, and which user flows are worth testing.
@@ -22,7 +23,7 @@ export function localBaseUrl(value) {
   let u;
   try { u = new URL(String(value ?? "").trim()); } catch { return ""; }
   if (!["http:", "https:"].includes(u.protocol) || u.username || u.password || !LOOPBACK.has(u.hostname) || u.port === "0") return "";
-  return u.origin + (u.pathname === "/" ? "" : u.pathname);
+  return literalSafeUrl(u.origin + (u.pathname === "/" ? "" : u.pathname));
 }
 
 // Shape and size validation only. Used on the analyst's output and again on whatever the

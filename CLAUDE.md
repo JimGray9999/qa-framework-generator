@@ -95,17 +95,27 @@ Security properties (do not weaken):
 
 Text from a live page is attacker-controlled too, so the manual and agent paths that analyse one are hardened alike:
 - **Isolation:** when a live page was fetched, the prompt runs `isolated` (the local Claude CLI gets no tools, MCP or hooks).
+  Downstream stages (Architect, Engineer) stay isolated whenever the URL came from the user, even if their own fetch fails
+  (e.g. the analysis cache expired): the plan and architecture they receive were derived from page text.
   `QAFG_ISOLATE_LIVE_PAGES=false` turns this off for live pages only (e.g. Windows with only the npm `.cmd` wrapper, which
   isolated mode refuses); repository content is always isolated and has no such switch.
 - **Page text** (`analyzePage`): control characters stripped, whitespace collapsed, credential-like strings redacted, each field
   length-capped, the fence marker removed, and the block fenced as untrusted data. Extraction patterns are bounded (a hostile page
   with 17,000 unclosed `<input ` tags took the old pattern over a second; the new one tens of ms) and at most 120 KB is scanned.
 - **`/api/generate` input** (audit item L5): `normalizeGenerateInput` accepts only a known language/framework pair and a real
-  http(s) URL without credentials, canonicalised (quotes/newlines percent-encoded) before it reaches a prompt or generated code.
-- **Model output** (`agents/generated.js`, shared with the Engineer agent): file names/paths must stay inside the project (no `..`,
-  absolute or drive paths, backslashes or control characters), no duplicates, bounded counts and sizes; only `name/path/content` are kept.
+  http(s) URL without credentials, canonicalised before it reaches a prompt or generated code. The canonical URL is also
+  literal-safe (`literalSafeUrl`): `'`, `"`, backtick, `\`, `$`, `|`, `^`, `{`, `}`, `<`, `>` are percent-encoded, because the prompts
+  embed it inside string literals in several languages and `URL.toString()` keeps e.g. apostrophes in paths.
+- **Model output and file destinations** (`agents/generated.js`): ONE resolver (`resolveGeneratedPath`) decides where a file goes, and
+  validation, `/api/generate`, the Engineer, `/api/run-tests` staging and `/api/download-zip` export all use it (it used to be three
+  different formulas). `name` may carry a directory; if it repeats or extends `path` (by whole segments) it wins, else it is appended.
+  Rejected: `..`, absolute or drive paths, backslashes, control characters, Windows-reserved names (CON, NUL, COM1-9, LPT1-9, also
+  with an extension), `< > : " | ? *` (including NTFS `:stream`), trailing dots/spaces in a directory segment, case-insensitive
+  duplicates, over-long paths, and out-of-bounds counts/sizes. The canonical `{name, path, content}` is what is returned and stored.
 - **Errors:** the generate route returns only deliberately user-facing messages; provider stderr and internals stay in the log.
-- **Local CLI timeout:** `QAFG_CLAUDE_TIMEOUT_MS` (default 5 min) kills a CLI that never answers, so it cannot pin a request or a scratch dir.
+- **Local CLI timeout:** `QAFG_CLAUDE_TIMEOUT_MS` (default 5 min) stops a CLI that never answers. The CLI runs in its own process group
+  (POSIX) and the whole tree is killed (`taskkill /T` on Windows, untested) and confirmed gone BEFORE the request fails, so the scratch dir
+  is never removed under a live process.
   Observed on `claude` 2.1.332: in isolated mode a prompt that asks the model to use a tool it does not have sometimes makes the CLI
   stall instead of answering (cause unknown); the timeout bounds it.
 
