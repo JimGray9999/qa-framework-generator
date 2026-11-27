@@ -1313,6 +1313,31 @@ function parseSurefireReports(xmlContents) {
   };
 }
 
+// Rewrite <TargetFramework> in the generated .csproj to the installed SDK's major version.
+async function alignDotnetTargetFramework(tempDir, csprojPath, sendEvent) {
+  let sdkVersion = '';
+  try {
+    const proc = spawn('dotnet', ['--version'], { cwd: tempDir });
+    proc.stdout.on('data', (d) => { sdkVersion += d.toString(); });
+    await new Promise((resolve) => {
+      proc.on('close', resolve);
+      proc.on('error', resolve);
+    });
+  } catch {
+    return;
+  }
+  const major = parseInt(sdkVersion.trim().split('.')[0], 10);
+  if (!Number.isInteger(major) || major < 6) return;
+
+  const csproj = await readFile(csprojPath, 'utf-8');
+  const match = csproj.match(/<TargetFramework>net(\d+)\.0<\/TargetFramework>/);
+  if (!match || parseInt(match[1], 10) === major) return;
+
+  const updated = csproj.replace(match[0], `<TargetFramework>net${major}.0</TargetFramework>`);
+  await writeFile(csprojPath, updated, 'utf-8');
+  sendEvent('pip', `Adjusted TargetFramework net${match[1]}.0 -> net${major}.0 to match installed .NET SDK ${sdkVersion.trim()}\n`);
+}
+
 // C# test execution
 async function runCSharpTests(tempDir, files, selectedBrowser, headed, slowMoMs, sendEvent) {
   // Find the .csproj file
@@ -1324,30 +1349,43 @@ async function runCSharpTests(tempDir, files, selectedBrowser, headed, slowMoMs,
   const csprojPath = join(tempDir, csprojFile.name);
   console.log("C# project file:", csprojPath);
 
+  // The model hard-codes a TargetFramework, but the installed SDK may be older or
+  // newer (NETSDK1045 on restore). Align the TFM with the SDK that is installed.
+  await alignDotnetTargetFramework(tempDir, csprojPath, sendEvent);
+
   sendEvent('status', 'Restoring NuGet packages...');
 
-  // Run dotnet restore
+  // Run dotnet restore, keeping the output tail so a failure explains itself
   const restore = spawn('dotnet', ['restore', csprojFile.name], {
     cwd: tempDir
   });
 
-  restore.stdout.on('data', (data) => {
-    sendEvent('pip', data.toString());
-  });
-
-  restore.stderr.on('data', (data) => {
-    sendEvent('pip', data.toString());
-  });
+  let restoreOutput = '';
+  const onRestoreData = (data) => {
+    const text = data.toString();
+    restoreOutput = (restoreOutput + text).slice(-4000);
+    sendEvent('pip', text);
+  };
+  restore.stdout.on('data', onRestoreData);
+  restore.stderr.on('data', onRestoreData);
 
   await new Promise((resolve, reject) => {
     restore.on('close', (code) => {
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(`dotnet restore failed with code ${code}`));
+        console.error('dotnet restore output:\n' + restoreOutput);
+        const hint = /NETSDK1045|NETSDK1141/.test(restoreOutput)
+          ? ' (the installed .NET SDK does not support the project target framework)'
+          : '';
+        reject(new Error(`dotnet restore failed with code ${code}${hint}`));
       }
     });
-    restore.on('error', reject);
+    restore.on('error', (err) => {
+      reject(err.code === 'ENOENT'
+        ? new Error('dotnet was not found on PATH. Install the .NET SDK.')
+        : err);
+    });
   });
 
   sendEvent('status', 'Building project...');
