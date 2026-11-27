@@ -31,7 +31,7 @@ const Spinner = () => (
   <span style={{ display: 'inline-block', width: 10, height: 10, border: '2px solid rgba(165,180,252,.3)', borderTopColor: '#a5b4fc', borderRadius: '50%', animation: 'qafg-spin .8s linear infinite' }} />
 );
 
-export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, onOpenFiles }) {
+export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, onOpenFiles, quickStart, onQuickStartConsumed }) {
   const [messages, setMessages] = useState([
     { role: 'assistant', content: 'Describe what you want to test. For example: "Test the login and checkout flow of https://www.saucedemo.com using Python and Playwright."\n\nYou can also attach your app\'s source code below (a public GitHub repo or a zip) so the agents plan from the code.' },
   ]);
@@ -111,6 +111,22 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
       setStage('plan_review');
     } catch (e) { setError(e.message); setStage('intake'); }
   };
+
+  // Quick Start: the form already holds a structured request, so the Intake chat is skipped and the
+  // Test Planner starts directly. The ref stops a re-render or a dev double-mount from running it twice.
+  const quickStartDone = useRef(null);
+  useEffect(() => {
+    if (!quickStart || quickStartDone.current === quickStart.id) return;
+    quickStartDone.current = quickStart.id;
+    onQuickStartConsumed?.();
+    const { id, ...req } = quickStart;
+    runRepoRef.current = null;
+    // The chat transcript is what the Intake agent receives on the next message, so the unvalidated
+    // form URL stays out of it; the validated request is shown by the Planner's own cards.
+    setMessages(m => m.slice(0, 1));
+    setRequest(null); setTestPlan(null); setArchitecture(null); setWarnings([]); setResult(null); setIncluded({});
+    runPlanner(req);
+  }, [quickStart]);
 
   const send = async () => {
     const text = input.trim();
