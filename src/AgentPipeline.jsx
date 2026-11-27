@@ -121,9 +121,9 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
     onQuickStartConsumed?.();
     const { id, ...req } = quickStart;
     runRepoRef.current = null;
-    setMessages(m => [m[0],
-      { role: 'user', content: `Quick Start: ${req.language} + ${req.framework} for ${req.targetUrl}` },
-      { role: 'assistant', content: 'Request taken from Quick Start. Handing it to the Test Planner.' }]);
+    // The chat transcript is what the Intake agent receives on the next message, so the unvalidated
+    // form URL stays out of it; the validated request is shown by the Planner's own cards.
+    setMessages(m => m.slice(0, 1));
     setRequest(null); setTestPlan(null); setArchitecture(null); setWarnings([]); setResult(null); setIncluded({});
     runPlanner(req);
   }, [quickStart]);

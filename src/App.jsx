@@ -582,8 +582,8 @@ const QAFrameworkGenerator = () => {
           </div>
         </div>
 
-        {/* ── Tab: Agents ── */}
-        {activeTab === 'agents' && (
+        {/* ── Tab: Agents ── (always mounted, only hidden: switching tabs must not lose a running or approved pipeline) */}
+        <div style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden', display: activeTab === 'agents' ? 'flex' : 'none' }}>
           <AgentPipeline
             apiFetch={apiFetch}
             settings={settings}
@@ -592,7 +592,7 @@ const QAFrameworkGenerator = () => {
             quickStart={quickStart}
             onQuickStartConsumed={() => setQuickStart(null)}
           />
-        )}
+        </div>
 
         {/* ── Tab: Config ── */}
         {activeTab === 'config' && (
@@ -629,7 +629,7 @@ const QAFrameworkGenerator = () => {
                   style={sel}
                 >
                   {frameworks[config.language].map(fw => (
-                    <option key={fw} value={fw}>{fw}</option>
+                    <option key={fw} value={fw} disabled={fw !== 'playwright'}>{fw === 'playwright' ? fw : `${fw} (not supported yet)`}</option>
                   ))}
                 </select>
               </div>
