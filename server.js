@@ -13,6 +13,7 @@ import { loadLanguageSkill } from "./skills.js";
 import { rateLimit } from "./middleware/rateLimit.js";
 import { envInt, MAX_TIMER_MS } from "./config.js";
 import { createConcurrencyGate } from "./middleware/concurrencyGate.js";
+import { resolvePython, pythonCandidates, PYTHON_NOT_FOUND_MESSAGE } from "./pythonBin.js";
 import { extractJSON } from "./agents/json.js";
 import { normalizeRequest } from "./agents/catalog.js";
 import { runIntake } from "./agents/intake.js";
@@ -666,8 +667,6 @@ function validateApprovedPlan(plan) {
 
 // Detect Python command (Docker uses 'python'/'pip', macOS uses 'python3'/'pip3')
 const isDocker = process.env.NODE_ENV === 'production' || process.env.DOCKER === 'true';
-const PYTHON = isDocker ? 'python' : 'python3';
-const PIP = isDocker ? 'pip' : 'pip3';
 
 // Download as ZIP endpoint
 app.post("/api/download-zip", async (req, res) => {
@@ -918,7 +917,18 @@ async function runPythonTests(tempDir, files, selectedBrowser, headed, slowMoMs,
 
   // Create virtual environment
   const venvPath = join(tempDir, 'venv');
-  const createVenv = spawn(PYTHON, ['-m', 'venv', venvPath], {
+
+  // Probe for a working Python 3 (see pythonBin.js): `python3` is a non-working Store
+  // placeholder on Windows, and `python` is missing on some Linux/macOS setups.
+  const python = await resolvePython({ candidates: pythonCandidates({ docker: isDocker }) });
+  if (!python) {
+    sendEvent('error', PYTHON_NOT_FOUND_MESSAGE);
+    throw new Error('No working Python 3 interpreter found');
+  }
+  const [pythonCmd, ...pythonArgs] = python;
+  console.log(`Using Python: ${python.join(' ')}`);
+
+  const createVenv = spawn(pythonCmd, [...pythonArgs, '-m', 'venv', venvPath], {
     cwd: tempDir
   });
 
