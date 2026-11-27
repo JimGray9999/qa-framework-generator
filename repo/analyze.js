@@ -4,7 +4,7 @@ import { agentError } from "../agents/catalog.js";
 
 // Archive bytes in, validated repository analysis out. Everything is in memory.
 export async function analyzeRepoBuffer({ buffer, name, generate, provider, apiKey, onEvent }) {
-  const digest = buildDigest(buffer, { name });
+  const digest = await buildDigest(buffer, { name });
   if (!digest.sample.length) {
     throw agentError("No readable source files were found in that archive (it may be empty, or contain only binaries and ignored folders).");
   }

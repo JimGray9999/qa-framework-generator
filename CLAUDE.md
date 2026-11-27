@@ -66,11 +66,29 @@ Security properties (do not weaken):
   `owner/repo/ref` and goes to `api.github.com`; redirects are followed manually and each hop must be `https` on
   `api.github.com` or `codeload.github.com`. Size (`QAFG_MAX_REPO_ZIP_BYTES`, default 25 MB) and time are capped.
   Not verified against the live GitHub API from the dev sandbox (it could not reach GitHub).
-- **Secrets are never sent to a model provider** (`repo/digest.js`): `.env*`, keys, certs, `credentials*`, etc. are
-  never read, and credential-like strings in included files are redacted. The UI says the source goes to the selected provider.
+- **Secret filtering is best-effort, not a guarantee** (`repo/digest.js`): `.env*`, keys, certs, `credentials*`, etc.
+  are never read, and credential-like strings are pattern-redacted. Redaction covers EVERYTHING that leaves the server
+  (file samples, scripts, routes, selectors, paths, the rendered prompt, and the analysis that is passed on), runs on
+  whole files before clipping (so a secret cannot straddle the cut), and drops metadata that looks like a credential.
+  Patterns cannot catch every secret; the UI tells users the source goes to their selected provider and not to attach
+  code they would not share with it.
+- **Text-only execution for source-derived prompts.** Prompt instructions do not enforce a boundary, so the repository
+  routes and every agent that consumes `repoContext` call the provider with `isolated: true`. For the local Claude CLI
+  (`claudeIsolation.js`) that means `--tools ""`, `--strict-mcp-config`, `--disable-slash-commands`,
+  `--no-session-persistence`, `--settings '{"disableAllHooks":true}'`, an empty scratch cwd and an allow-listed
+  environment (`QAFG_CLAUDE_ENV_PASSTHROUGH=A,B` adds names; `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` are never passed).
+  Verified against `claude` 2.1.332: under the default flags user- and project-level hooks and MCP servers all ran; under
+  these none did. `--bare` is not used because it disables subscription login. On Windows the npm `.cmd` wrapper is
+  refused in isolated mode (arguments cannot be quoted reliably through a shell); use the native `claude.exe` or an API
+  provider (tool-free by construction). Re-check the flags when upgrading the CLI.
 - **Prompt injection:** repository text is fenced in `<<<FILE ...>>>` markers, the analyst prompt treats it as data, its
-  output is validated and size-capped, and selectors it cites must appear in the deterministic extraction. The repo-derived base URL is
-  restricted to localhost. The existing human review gates still apply.
+  output is validated and size-capped, and selectors it cites must appear in the deterministic extraction. The
+  repo-derived base URL is parsed with `URL` and restricted to loopback hosts (no credentials, valid port). The existing
+  human review gates still apply. Fencing is mitigation only; the isolation above is what limits the damage.
+- **Resource bounds:** archive inflation is async (zlib thread pool) with a per-entry output cap; every read attempt,
+  failed or not, is charged to a decompression budget; overlapping entries are refused; extraction regexes are bounded and
+  files are scanned in bounded slices with the event loop yielded between files; each prompt section has a character
+  budget and the whole prompt has a hard cap (`DIGEST_LIMITS`).
 - Uploads use a per-route raw body parser mounted after auth and the rate limiter, so unauthenticated requests are never buffered.
 
 ---

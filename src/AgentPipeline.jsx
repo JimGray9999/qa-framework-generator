@@ -14,7 +14,6 @@ const AGENTS = [
 
 // stage -> index of the agent currently active
 const STAGE_AGENT = { intake: 0, planning: 2, plan_review: 2, architecting: 3, arch_review: 3, coding: 4, done: 4 };
-const MAX_ZIP_BYTES = 25 * 1024 * 1024; // mirrors the server default; the server is authoritative
 const WORKING = new Set(['planning', 'architecting', 'coding']);
 const GATES = new Set(['plan_review', 'arch_review']);
 
@@ -52,6 +51,9 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
   const [repoStatus, setRepoStatus] = useState('idle'); // idle | working | done | error
   const [repoUrl, setRepoUrl] = useState('');
   const fileRef = useRef(null);
+  // The attachment is snapshotted when a request is sent and used by every stage of that run,
+  // so the Planner, Architect and Engineer can never disagree about whether code was attached.
+  const runRepoRef = useRef(null);
   const endRef = useRef(null);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, busy]);
@@ -80,7 +82,8 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
   const attachGithub = () => attachRepo(() => post('/api/agents/repo/github', { url: repoUrl.trim() }));
   const attachZip = (file) => {
     if (!file) return;
-    if (file.size > MAX_ZIP_BYTES) { setRepoStatus('error'); setError(`That zip is larger than ${Math.round(MAX_ZIP_BYTES / 1048576)} MB. Upload a trimmed zip.`); return; }
+    // No size check here: the server enforces its configured limit (QAFG_MAX_REPO_ZIP_BYTES)
+    // and answers 413 with a message, so raising the limit needs no client change.
     return attachRepo(async () => {
       const headers = { 'Content-Type': 'application/zip', 'X-QAFG-Filename': encodeURIComponent(file.name) };
       if (settings.provider) headers['X-QAFG-Provider'] = settings.provider;
@@ -101,7 +104,7 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
   const runPlanner = async (req) => {
     setStage('planning'); setError(null);
     try {
-      const data = await post('/api/agents/plan', { request: req, repoContext });
+      const data = await post('/api/agents/plan', { request: req, repoContext: runRepoRef.current });
       setRequest(data.request);
       setTestPlan(data.testPlan);
       setIncluded(Object.fromEntries(data.testPlan.scenarios.map(s => [s.id, true])));
@@ -111,11 +114,13 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
 
   const send = async () => {
     const text = input.trim();
-    if (!text || busy || stage !== 'intake') return;
+    // Not while the code is still being analysed: the run must start with the final attachment.
+    if (!text || busy || stage !== 'intake' || repoStatus === 'working') return;
+    runRepoRef.current = repoContext;
     const next = [...messages, { role: 'user', content: text }];
     setMessages(next); setInput(''); setBusy(true); setError(null);
     try {
-      const data = await post('/api/agents/intake', { messages: next.slice(1), hasRepo: !!repoContext });
+      const data = await post('/api/agents/intake', { messages: next.slice(1), hasRepo: !!runRepoRef.current });
       setMessages(m => [...m, { role: 'assistant', content: data.reply }]);
       if (data.status === 'ready') {
         // Save the request first so the Intake card is available while planning runs
@@ -134,7 +139,7 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
   const runArchitect = async () => {
     setStage('architecting'); setError(null);
     try {
-      const data = await post('/api/agents/architect', { request, testPlan: approvedPlan(), repoContext });
+      const data = await post('/api/agents/architect', { request, testPlan: approvedPlan(), repoContext: runRepoRef.current });
       setArchitecture(data.architecture);
       setStage('arch_review');
     } catch (e) { setError(e.message); setStage('plan_review'); }
@@ -143,7 +148,7 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
   const runEngineer = async () => {
     setStage('coding'); setError(null);
     try {
-      const data = await post('/api/agents/engineer', { request, testPlan: approvedPlan(), architecture, repoContext });
+      const data = await post('/api/agents/engineer', { request, testPlan: approvedPlan(), architecture, repoContext: runRepoRef.current });
       const parsed = JSON.parse(data.content[0].text);
       setWarnings(data.warnings || []);
       setResult(parsed);
@@ -202,7 +207,7 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
               <div style={{ ...card, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#a1a1aa' }}>
                 <span style={{ color: '#4ade80' }}>●</span>
                 <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={repoInfo.name}>{repoInfo.name}</span>
-                <button type="button" onClick={clearRepo} disabled={stage !== 'intake'} style={{ background: 'none', border: 'none', color: stage === 'intake' ? '#a5b4fc' : '#3f3f46', cursor: stage === 'intake' ? 'pointer' : 'default', fontSize: 11, textDecoration: 'underline' }}>Remove</button>
+                <button type="button" onClick={clearRepo} disabled={stage !== 'intake' || busy} style={{ background: 'none', border: 'none', color: stage === 'intake' && !busy ? '#a5b4fc' : '#3f3f46', cursor: stage === 'intake' && !busy ? 'pointer' : 'default', fontSize: 11, textDecoration: 'underline' }}>Remove</button>
               </div>
             ) : (
               <>
@@ -211,34 +216,34 @@ export default function AgentPipeline({ apiFetch, settings, onFrameworkReady, on
                     value={repoUrl}
                     onChange={e => setRepoUrl(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); if (repoUrl.trim()) attachGithub(); } }}
-                    disabled={stage !== 'intake' || repoStatus === 'working'}
+                    disabled={stage !== 'intake' || busy || repoStatus === 'working'}
                     placeholder="https://github.com/owner/repo"
                     aria-label="Public GitHub repository URL"
                     style={{ flex: 1, minWidth: 0, boxSizing: 'border-box', padding: '7px 10px', background: 'rgba(255,255,255,.04)', border: '1px solid rgba(255,255,255,.1)', borderRadius: 7, color: '#e4e4e7', fontSize: 12, fontFamily: "'Inter', sans-serif", outline: 'none' }}
                   />
-                  <button type="button" onClick={attachGithub} disabled={stage !== 'intake' || repoStatus === 'working' || !repoUrl.trim()} style={{ ...btn(false, stage !== 'intake' || repoStatus === 'working' || !repoUrl.trim()), padding: '7px 12px' }}>Analyze</button>
+                  <button type="button" onClick={attachGithub} disabled={stage !== 'intake' || busy || repoStatus === 'working' || !repoUrl.trim()} style={{ ...btn(false, stage !== 'intake' || busy || repoStatus === 'working' || !repoUrl.trim()), padding: '7px 12px' }}>Analyze</button>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
                   <input ref={fileRef} type="file" accept=".zip,application/zip,application/x-zip-compressed" style={{ display: 'none' }}
                     onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; attachZip(f); }} />
-                  <button type="button" onClick={() => fileRef.current?.click()} disabled={stage !== 'intake' || repoStatus === 'working'} style={{ ...btn(false, stage !== 'intake' || repoStatus === 'working'), padding: '6px 12px' }}>Upload .zip</button>
+                  <button type="button" onClick={() => fileRef.current?.click()} disabled={stage !== 'intake' || busy || repoStatus === 'working'} style={{ ...btn(false, stage !== 'intake' || busy || repoStatus === 'working'), padding: '6px 12px' }}>Upload .zip</button>
                   {repoStatus === 'working' && <span style={{ fontSize: 11, color: '#a5b4fc' }}><Spinner /> Analyzing code...</span>}
                 </div>
               </>
             )}
-            <div style={{ fontSize: 10.5, color: '#52525b', marginTop: 6, lineHeight: 1.5 }}>Public repos only. Source is sent to your selected AI provider; secret files (.env, keys) are skipped and credential-like strings redacted.</div>
+            <div style={{ fontSize: 10.5, color: '#52525b', marginTop: 6, lineHeight: 1.5 }}>Public repos only. Source is sent to your selected AI provider. Secret files (.env, keys) are skipped and credential-like strings are redacted on a best-effort basis, which cannot catch everything, so don't attach code you wouldn't share with that provider.</div>
           </div>
           <textarea
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-            disabled={stage !== 'intake' || busy}
+            disabled={stage !== 'intake' || busy || repoStatus === 'working'}
             rows={3}
             placeholder={stage === 'intake' ? 'What should we test?' : 'Request captured. Review the pipeline on the right.'}
             style={{ width: '100%', boxSizing: 'border-box', padding: '9px 12px', background: 'rgba(255,255,255,.04)', border: '1px solid rgba(255,255,255,.1)', borderRadius: 7, color: '#e4e4e7', fontSize: 13, fontFamily: "'Inter', sans-serif", resize: 'none', outline: 'none' }}
           />
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button onClick={send} disabled={stage !== 'intake' || busy || !input.trim()} style={btn(true, stage !== 'intake' || busy || !input.trim())}>Send</button>
+            <button onClick={send} disabled={stage !== 'intake' || busy || repoStatus === 'working' || !input.trim()} style={btn(true, stage !== 'intake' || busy || repoStatus === 'working' || !input.trim())}>Send</button>
             {stage !== 'intake' && <button onClick={reset} disabled={WORKING.has(stage)} style={btn(false, WORKING.has(stage))}>New request</button>}
           </div>
         </div>

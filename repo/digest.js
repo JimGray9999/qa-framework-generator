@@ -1,7 +1,8 @@
 import { openZip, ZipError } from "./zipReader.js";
 
-// Turn an (untrusted) repository archive into a bounded, secret-free digest for the Repo
-// Analyst agent. The digest has two halves:
+// Turn an (untrusted) repository archive into a bounded digest for the Repo Analyst agent,
+// with secrets filtered on a BEST-EFFORT basis (see redact(): pattern-based, so it cannot
+// catch every credential; do not attach code you would not send to your AI provider). The digest has two halves:
 //   * deterministic facts extracted by code (stack, scripts, routes, UI selectors), which
 //     the agent can cite but cannot invent; and
 //   * a budgeted sample of the most informative source files.
@@ -9,6 +10,11 @@ import { openZip, ZipError } from "./zipReader.js";
 
 export const DIGEST_LIMITS = {
   maxFileBytes: 200_000,       // never inflate a single file larger than this
+  maxScanChars: 100_000,       // characters of one file scanned for selectors/routes
+  readOverheadBytes: 1024,     // charged per read attempt, so even empty or failing entries cost something
+  maxPromptChars: 120_000,     // hard cap on the whole rendered prompt
+  sectionChars: { header: 1_500, scripts: 4_000, routes: 10_000, selectors: 20_000, tree: 15_000 },
+  maxDisplayPath: 160,         // longest path shown in the prompt
   maxTotalReadBytes: 12_000_000, // across all files read for analysis
   maxCandidates: 400,          // files read for scoring
   charBudget: 60_000,          // characters of file content sent to the model
@@ -30,14 +36,15 @@ const ext = (p) => (p.includes(".") ? p.slice(p.lastIndexOf(".") + 1).toLowerCas
 
 // ---- redaction (applied to everything that goes into a prompt) ----------------------
 const REDACTIONS = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+  // A private key block, or (if it is cut off) everything after its header up to a cap.
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]{0,10000}?-----END [A-Z ]*PRIVATE KEY-----|[\s\S]{0,10000})/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
   /\bgh[pousr]_[A-Za-z0-9]{30,}\b/g,
   /\bsk-[A-Za-z0-9_-]{20,}\b/g,
   /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g,
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, // JWT
 ];
-const KEYED_SECRET = /((?:api[_-]?key|secret|token|passw(?:or)?d|pwd|private[_-]?key|authorization|client[_-]?secret|connection[_-]?string)["']?\s*[:=]\s*)(["'`])[^"'`\n]{6,}\2/gi;
+const KEYED_SECRET = /((?:api[_-]?key|secret|token|passw(?:or)?d|pwd|private[_-]?key|authorization|client[_-]?secret|connection[_-]?string)["']?\s*[:=]\s*)(["'`])[^"'`\n]{6,2000}\2/gi;
 
 export function redact(text) {
   let count = 0;
@@ -51,15 +58,15 @@ export function redact(text) {
 const SELECTOR_PATTERNS = [
   { kind: "data-testid", re: /\bdata-test(?:id|-id)?\s*=\s*["']([^"'{}$]{1,80})["']/g, css: (v, m) => `[${m[0].match(/data-test(?:id|-id)?/)[0]}="${v}"]` },
   { kind: "data-cy", re: /\bdata-cy\s*=\s*["']([^"'{}$]{1,80})["']/g, css: (v) => `[data-cy="${v}"]` },
-  { kind: "id", re: /<(?:input|button|select|textarea|form|a|div|span|nav|section|h[1-6]|label|table|ul)\b[^>]*?\bid\s*=\s*["']([A-Za-z][\w:-]{0,60})["']/g, css: (v) => `#${v}` },
-  { kind: "name", re: /<(?:input|select|textarea)\b[^>]*?\bname\s*=\s*["']([^"'{}$]{1,60})["']/g, css: (v) => `[name="${v}"]` },
+  { kind: "id", re: /<(?:input|button|select|textarea|form|a|div|span|nav|section|h[1-6]|label|table|ul)\b[^>]{0,300}?\bid\s*=\s*["']([A-Za-z][\w:-]{0,60})["']/g, css: (v) => `#${v}` },
+  { kind: "name", re: /<(?:input|select|textarea)\b[^>]{0,300}?\bname\s*=\s*["']([^"'{}$]{1,60})["']/g, css: (v) => `[name="${v}"]` },
   { kind: "aria-label", re: /\baria-label\s*=\s*["']([^"'{}$]{1,80})["']/g, css: (v) => `[aria-label="${v}"]` },
   { kind: "placeholder", re: /\bplaceholder\s*=\s*["']([^"'{}$]{1,80})["']/g, css: (v) => `[placeholder="${v}"]` },
 ];
 const ROUTE_PATTERNS = [
   /\b(?:app|router|server)\.(get|post|put|delete|patch|all)\(\s*['"`](\/[^'"`]*)['"`]/g,
   /@(?:\w+)\.(route|get|post|put|delete|patch)\(\s*['"](\/[^'"]*)['"]/g,
-  /<Route[^>]*\bpath\s*=\s*["'](\/[^"']*)["']/g,
+  /<Route[^>]{0,300}\bpath\s*=\s*["'](\/[^"']*)["']/g,
   /\bpath\(\s*['"]([^'"]*)['"]/g,
   /@(?:Get|Post|Put|Delete|Patch|Request)Mapping\(\s*(?:value\s*=\s*)?["'](\/[^"']*)["']/g,
   /\[(?:Http(?:Get|Post|Put|Delete)|Route)\(\s*"([^"]+)"\s*\)\]/g,
@@ -69,17 +76,27 @@ function addUnique(list, item, key, max) {
   if (list.length < max && !list.some((x) => x[key] === item[key])) list.push(item);
 }
 
+// Extracted metadata is serialised into the prompt outside the file-sample pass, so every
+// value is checked too: one that contains something credential-like is dropped, not sent.
+const hasSecret = (v) => redact(String(v)).count > 0;
+
+// Bound very long display strings (archive paths can be up to 64 KB each).
+const disp = (p, max = DIGEST_LIMITS.maxDisplayPath) => (p.length > max ? `${p.slice(0, Math.floor(max * 0.6))}…${p.slice(-Math.floor(max * 0.35))}` : p);
+
 function extractFacts(path, text, facts) {
   for (const { kind, re, css } of SELECTOR_PATTERNS) {
     re.lastIndex = 0;
-    for (let m; (m = re.exec(text)); ) addUnique(facts.selectors, { selector: css(m[1], m), kind, file: path }, "selector", DIGEST_LIMITS.maxSelectors);
+    for (let m; (m = re.exec(text)); ) {
+      const selector = css(m[1], m);
+      if (!hasSecret(selector)) addUnique(facts.selectors, { selector, kind, file: path }, "selector", DIGEST_LIMITS.maxSelectors);
+    }
   }
   for (const re of ROUTE_PATTERNS) {
     re.lastIndex = 0;
     for (let m; (m = re.exec(text)); ) {
       const route = m[m.length - 1];
       const method = m.length > 2 ? String(m[1]).toUpperCase() : "";
-      addUnique(facts.routes, { route: route.slice(0, 120), method, file: path }, "route", DIGEST_LIMITS.maxRoutes);
+      if (!hasSecret(route)) addUnique(facts.routes, { route: route.slice(0, 120), method, file: path }, "route", DIGEST_LIMITS.maxRoutes);
     }
   }
   // file-system routing: pages/foo.jsx, app/foo/page.tsx
@@ -106,7 +123,7 @@ function detectStack(path, text, facts) {
       for (const [needle, label] of STACK_HINTS) if (deps[needle]) facts.stack.add(label);
       if (deps.typescript) facts.stack.add("TypeScript");
       if (pkg.scripts && typeof pkg.scripts === "object" && path.split("/").length <= 3) {
-        for (const k of ["start", "dev", "serve", "build", "test"]) if (typeof pkg.scripts[k] === "string") facts.scripts.push({ file: path, name: k, command: pkg.scripts[k].slice(0, 160) });
+        for (const k of ["start", "dev", "serve", "build", "test"]) if (typeof pkg.scripts[k] === "string") facts.scripts.push({ file: path, name: k, command: redact(pkg.scripts[k].slice(0, 160)).text });
       }
     } catch { /* malformed manifest: ignore */ }
   } else if (base === "requirements.txt" || base === "pyproject.toml" || base === "pipfile") {
@@ -139,7 +156,7 @@ function pathScore(path) {
   return s - depth;
 }
 
-export function buildDigest(buffer, { name = "repository", limits = DIGEST_LIMITS } = {}) {
+export async function buildDigest(buffer, { name = "repository", limits = DIGEST_LIMITS } = {}) {
   const zip = openZip(buffer);
 
   // GitHub wraps everything in "<owner>-<repo>-<sha>/": strip a single shared top-level folder.
@@ -163,39 +180,43 @@ export function buildDigest(buffer, { name = "repository", limits = DIGEST_LIMIT
   usable.sort((a, b) => pathScore(b.rel) - pathScore(a.rel) || a.rel.localeCompare(b.rel));
   const facts = { stack: new Set(), scripts: [], routes: [], selectors: [] };
   const candidates = [];
-  let readBytes = 0;
+  let spent = 0; // decompression budget: every read ATTEMPT is charged, failed or not
   for (const f of usable.slice(0, limits.maxCandidates)) {
-    if (readBytes + f.size > limits.maxTotalReadBytes) break;
+    const charge = Math.min(f.size, limits.maxFileBytes) + limits.readOverheadBytes;
+    if (spent + charge > limits.maxTotalReadBytes) break;
+    spent += charge;
+    await new Promise((r) => setImmediate(r)); // let other requests run between files
     let text;
-    try { text = zip.read(f, { maxBytes: limits.maxFileBytes }).toString("utf8"); } catch (e) { if (e instanceof ZipError) { stats.unreadable++; continue; } throw e; }
-    readBytes += f.size;
+    try { text = (await zip.read(f, { maxBytes: limits.maxFileBytes })).toString("utf8"); } catch (e) { if (e instanceof ZipError) { stats.unreadable++; continue; } throw e; }
     if (text.includes("\0")) { stats.notText++; continue; } // binary content with a text extension
-    extractFacts(f.rel, text, facts);
-    detectStack(f.rel, text, facts);
-    const bonus = (/<form|<input|<button|data-testid|@app\.route|\.get\(|router\./.test(text) ? 30 : 0) - Math.min(20, Math.floor(text.length / 2000));
+    const scan = text.length > limits.maxScanChars ? text.slice(0, limits.maxScanChars) : text;
+    extractFacts(f.rel, scan, facts);
+    detectStack(f.rel, scan, facts);
+    const bonus = (/<form|<input|<button|data-testid|@app\.route|\.get\(|router\./.test(scan) ? 30 : 0) - Math.min(20, Math.floor(text.length / 2000));
     candidates.push({ path: f.rel, text, score: pathScore(f.rel) + bonus });
   }
 
-  // Budgeted sample of file contents, redacted.
+  // Budgeted sample of file contents. Redaction runs on the WHOLE file first and the result is
+  // clipped afterwards, so a secret cannot straddle the clip boundary and slip through.
   candidates.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
   const sample = [];
   let chars = 0;
   for (const c of candidates) {
     if (chars >= limits.charBudget) break;
-    const { text, count } = redact(c.text.slice(0, limits.perFileChars));
+    const { text: redacted, count } = redact(c.text);
     stats.redactions += count;
-    const clipped = c.text.length > limits.perFileChars;
-    sample.push({ path: c.path, content: text, clipped });
-    chars += text.length;
+    const content = redacted.slice(0, limits.perFileChars);
+    sample.push({ path: redact(disp(c.path)).text, content, clipped: redacted.length > limits.perFileChars });
+    chars += content.length;
   }
 
-  const tree = usable.map((f) => f.rel).sort().slice(0, limits.maxTreeLines);
+  const tree = usable.map((f) => redact(disp(f.rel)).text).sort().slice(0, limits.maxTreeLines);
   return {
-    name,
+    name: redact(disp(String(name), 120)).text,
     stack: [...facts.stack],
-    scripts: facts.scripts.slice(0, 12),
-    routes: facts.routes,
-    selectors: facts.selectors,
+    scripts: facts.scripts.slice(0, 12).map((x) => ({ ...x, file: redact(disp(x.file)).text })),
+    routes: facts.routes.map((x) => ({ ...x, file: redact(disp(x.file)).text })),
+    selectors: facts.selectors.map((x) => ({ ...x, file: redact(disp(x.file)).text })),
     tree,
     treeTruncated: usable.length > tree.length,
     sample,
@@ -205,15 +226,35 @@ export function buildDigest(buffer, { name = "repository", limits = DIGEST_LIMIT
 
 // Render the digest as prompt text. Repository content is wrapped in explicit markers so the
 // model can tell data from instructions (the analyst prompt tells it to treat it as data).
-export function digestToPrompt(d) {
-  const lines = [];
-  lines.push(`REPOSITORY: ${d.name}`);
-  lines.push(`FILES ANALYSED: ${d.stats.totalFiles - d.stats.ignored - d.stats.secretFilesSkipped - d.stats.notText - d.stats.tooLarge} of ${d.stats.totalFiles} (ignored: ${d.stats.ignored}, secret-bearing files skipped: ${d.stats.secretFilesSkipped}, non-text: ${d.stats.notText}, too large: ${d.stats.tooLarge})`);
-  lines.push(`DETECTED STACK: ${d.stack.join(", ") || "unknown"}`);
-  if (d.scripts.length) lines.push("SCRIPTS:\n" + d.scripts.map((s) => `- ${s.file}: ${s.name} = ${s.command}`).join("\n"));
-  if (d.routes.length) lines.push("DETECTED ROUTES (heuristic):\n" + d.routes.map((r) => `- ${r.method ? r.method + " " : ""}${r.route}  (${r.file})`).join("\n"));
-  if (d.selectors.length) lines.push("DETECTED UI ELEMENTS (extracted from source; use these exact selector strings):\n" + d.selectors.map((s) => `- ${s.selector}  [${s.kind}, ${s.file}]`).join("\n"));
-  lines.push(`FILE TREE${d.treeTruncated ? " (truncated)" : ""}:\n` + d.tree.join("\n"));
-  for (const f of d.sample) lines.push(`<<<FILE ${f.path}${f.clipped ? " (clipped)" : ""}>>>\n${f.content}\n<<<END FILE>>>`);
-  return lines.join("\n\n");
+// Every section has its own character budget and the whole prompt has a hard cap, so a
+// repository cannot make the provider request arbitrarily large (long paths, many routes).
+function fit(lines, maxChars) {
+  const out = [];
+  let used = 0;
+  for (const line of lines) {
+    if (used + line.length + 1 > maxChars) { out.push("… (truncated)"); break; }
+    out.push(line);
+    used += line.length + 1;
+  }
+  return out.join("\n");
+}
+
+export function digestToPrompt(d, limits = DIGEST_LIMITS) {
+  const sc = limits.sectionChars;
+  const analysed = d.stats.totalFiles - d.stats.ignored - d.stats.secretFilesSkipped - d.stats.notText - d.stats.tooLarge;
+  const parts = [];
+  parts.push(fit([
+    `REPOSITORY: ${d.name}`,
+    `FILES ANALYSED: ${analysed} of ${d.stats.totalFiles} (ignored: ${d.stats.ignored}, secret-bearing files skipped: ${d.stats.secretFilesSkipped}, non-text: ${d.stats.notText}, too large: ${d.stats.tooLarge})`,
+    `DETECTED STACK: ${d.stack.join(", ") || "unknown"}`,
+  ], sc.header));
+  if (d.scripts.length) parts.push("SCRIPTS:\n" + fit(d.scripts.map((s) => `- ${s.file}: ${s.name} = ${s.command}`), sc.scripts));
+  if (d.routes.length) parts.push("DETECTED ROUTES (heuristic):\n" + fit(d.routes.map((r) => `- ${r.method ? r.method + " " : ""}${r.route}  (${r.file})`), sc.routes));
+  if (d.selectors.length) parts.push("DETECTED UI ELEMENTS (extracted from source; use these exact selector strings):\n" + fit(d.selectors.map((s) => `- ${s.selector}  [${s.kind}, ${s.file}]`), sc.selectors));
+  parts.push(`FILE TREE${d.treeTruncated ? " (truncated)" : ""}:\n` + fit(d.tree, sc.tree));
+  for (const f of d.sample) parts.push(`<<<FILE ${f.path}${f.clipped ? " (clipped)" : ""}>>>\n${f.content}\n<<<END FILE>>>`);
+  // Last line of defence: redact the final text and enforce the hard cap.
+  let text = redact(parts.join("\n\n")).text;
+  if (text.length > limits.maxPromptChars) text = text.slice(0, limits.maxPromptChars) + "\n… (prompt truncated)";
+  return text;
 }

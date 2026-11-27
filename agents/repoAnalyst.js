@@ -1,4 +1,5 @@
 import { runAgent, asArray, need } from "./runAgent.js";
+import { redact } from "../repo/digest.js";
 
 const SYSTEM = `You are the Repo Analyst Agent in a QA automation framework generator.
 You read a digest of a web application's source code and explain what a tester needs to know to automate it: its pages and routes, forms and key UI elements, how authentication works, how to run it, and which user flows are worth testing.
@@ -8,15 +9,26 @@ Output ONLY a single valid JSON object.`;
 
 // Strip control characters and cap the length. Model output and anything round-tripped
 // through the client is untrusted, and these strings end up inside later prompts.
-const clean = (v, max = 400) => String(v ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").slice(0, max).trim();
+// Credential-like strings are redacted here too (before clipping), because this text is
+// forwarded to further model calls and round-trips through the browser.
+const clean = (v, max = 400) => redact(String(v ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")).text.slice(0, max).trim();
 const list = (v, max, len) => asArray(v).slice(0, max).map((x) => clean(x, len)).filter(Boolean);
-const LOCAL_URL_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{1,5})?(?:\/[^\s]*)?$/;
+// The base URL of the app as found in the code. Parsed with the real URL parser (so an
+// out-of-range port is rejected here and not later by another agent), restricted to loopback
+// hosts, no credentials; query and fragment are dropped. Anything else becomes "" and the
+// pipeline's normal fallback applies.
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+export function localBaseUrl(value) {
+  let u;
+  try { u = new URL(String(value ?? "").trim()); } catch { return ""; }
+  if (!["http:", "https:"].includes(u.protocol) || u.username || u.password || !LOOPBACK.has(u.hostname) || u.port === "0") return "";
+  return u.origin + (u.pathname === "/" ? "" : u.pathname);
+}
 
 // Shape and size validation only. Used on the analyst's output and again on whatever the
 // client sends back in later requests.
 export function sanitizeRepoContext(o) {
   need(o && typeof o === "object", "repository analysis must be an object");
-  const baseUrl = clean(o.howToRun?.baseUrl, 200);
   return {
     name: clean(o.name, 120),
     summary: clean(o.summary, 1200),
@@ -26,7 +38,7 @@ export function sanitizeRepoContext(o) {
     })).filter((p) => p.name || p.route),
     forms: asArray(o.forms).slice(0, 15).map((f) => ({ page: clean(f?.page, 80), fields: list(f?.fields, 15, 60), submits: clean(f?.submits, 160) })),
     auth: { present: o.auth?.present === true, notes: clean(o.auth?.notes, 300) },
-    howToRun: { install: clean(o.howToRun?.install, 160), start: clean(o.howToRun?.start, 160), baseUrl: LOCAL_URL_RE.test(baseUrl) ? baseUrl : "" },
+    howToRun: { install: clean(o.howToRun?.install, 160), start: clean(o.howToRun?.start, 160), baseUrl: localBaseUrl(o.howToRun?.baseUrl) },
     testableFlows: asArray(o.testableFlows).slice(0, 10).map((f) => ({ name: clean(f?.name, 100), steps: list(f?.steps, 10, 200) })).filter((f) => f.name),
     selectorHints: asArray(o.selectorHints).slice(0, 80).map((s) => ({ page: clean(s?.page, 80), selector: clean(s?.selector, 120), purpose: clean(s?.purpose, 120) })).filter((s) => s.selector),
     risks: list(o.risks, 8, 250),

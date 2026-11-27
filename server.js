@@ -597,8 +597,12 @@ app.use('/api/agents', requireAuth, rateLimit({
   message: 'Too many agent requests. Wait a moment and try again.',
 }));
 
-const agentDeps = (body) => ({
-  generate: generateWithProvider,
+// `untrusted: true` marks calls whose prompt contains source-derived (attacker-influenced)
+// content: the repository routes and every agent that consumes the repository analysis.
+// For the local Claude CLI that means an isolated, tool-free session (claudeIsolation.js);
+// the API providers are tool-free already.
+const agentDeps = (body, { untrusted = false } = {}) => ({
+  generate: untrusted ? (args) => generateWithProvider({ ...args, isolated: true }) : generateWithProvider,
   provider: body.provider,
   apiKey: body.apiKey,
   onEvent: (e) => console.log(`[agent:${e.agent}] attempt ${e.attempt} ${e.ok ? 'ok' : 'rejected: ' + e.error}`),
@@ -627,7 +631,7 @@ app.post('/api/agents/repo/github', agentRoute(async (body) => {
   const ref = parseGitHubUrl(body.url);
   const buffer = await downloadGitHubZip(ref, { maxBytes: MAX_REPO_ZIP_BYTES });
   const name = `${ref.owner}/${ref.repo}${ref.ref ? `@${ref.ref}` : ''}`;
-  return analyzeRepoBuffer({ buffer, name, ...agentDeps(body) });
+  return analyzeRepoBuffer({ buffer, name, ...agentDeps(body, { untrusted: true }) });
 }));
 
 // Raw upload (Content-Type: application/zip). The body parser is mounted per route, after
@@ -644,7 +648,7 @@ app.post('/api/agents/repo/zip',
     return analyzeRepoBuffer({
       buffer: body,
       name: `upload: ${filename}`,
-      ...agentDeps({ provider: req.get('x-qafg-provider') || undefined, apiKey: req.get('x-qafg-api-key') || undefined }),
+      ...agentDeps({ provider: req.get('x-qafg-provider') || undefined, apiKey: req.get('x-qafg-api-key') || undefined }, { untrusted: true }),
     });
   }));
 
@@ -695,7 +699,7 @@ app.post('/api/agents/plan', agentRoute(async (body) => {
   const repoContext = readRepoContext(body);
   const request = resolveTarget(normalizeRequest(body.request, { hasRepo: !!repoContext }), repoContext);
   const { pageData, pageAnalysis } = await pageAnalysisFor(request);
-  const testPlan = await runTestPlanner({ request, pageAnalysis, repoContext, ...agentDeps(body) });
+  const testPlan = await runTestPlanner({ request, pageAnalysis, repoContext, ...agentDeps(body, { untrusted: !!repoContext }) });
   return { request, testPlan, pageAnalysis: pageData };
 }));
 
@@ -705,7 +709,7 @@ app.post('/api/agents/architect', agentRoute(async (body) => {
   const testPlan = validateApprovedPlan(body.testPlan);
   const { pageAnalysis } = await pageAnalysisFor(request);
   const requiredFiles = getLanguagePrompt(request.language, request.targetUrl).fileList;
-  const architecture = await runArchitect({ request, testPlan, pageAnalysis, repoContext, requiredFiles, ...agentDeps(body) });
+  const architecture = await runArchitect({ request, testPlan, pageAnalysis, repoContext, requiredFiles, ...agentDeps(body, { untrusted: !!repoContext }) });
   return { architecture };
 }));
 
@@ -721,7 +725,7 @@ app.post('/api/agents/engineer', agentRoute(async (body) => {
   }
   const { pageAnalysis } = await pageAnalysisFor(request);
   const langPrompt = getLanguagePrompt(request.language, request.targetUrl);
-  const result = await runEngineer({ request, testPlan, architecture, pageAnalysis, repoContext, langPrompt, ...agentDeps(body) });
+  const result = await runEngineer({ request, testPlan, architecture, pageAnalysis, repoContext, langPrompt, ...agentDeps(body, { untrusted: !!repoContext }) });
   return { content: [{ text: JSON.stringify({ files: result.files, summary: result.summary }) }], warnings: result.warnings };
 }));
 

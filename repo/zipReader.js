@@ -1,4 +1,7 @@
-import { inflateRawSync } from "zlib";
+import { inflateRaw } from "zlib";
+import { promisify } from "util";
+
+const inflateRawAsync = promisify(inflateRaw);
 
 // Minimal, defensive ZIP reader for UNTRUSTED archives (GitHub downloads and user uploads).
 //
@@ -7,7 +10,10 @@ import { inflateRawSync } from "zlib";
 //    path traversal ("zip slip"), symlink and permission tricks have nothing to act on.
 //    Paths are still normalised, because they are used as labels in prompts.
 //  - Decompressed output is hard-capped per entry (zlib maxOutputLength), whatever sizes
-//    the archive declares, so a zip bomb cannot exhaust memory.
+//    the archive declares, so a zip bomb cannot exhaust memory. Inflation runs on zlib's
+//    thread pool (async), not on the request's event loop.
+//  - Entries whose compressed data overlap each other or the central directory are refused,
+//    so one block of compressed bytes cannot be made to count as many files.
 //  - Entry count is capped; every offset and length is bounds-checked against the buffer.
 //  - Encrypted entries, symlinks, multi-disk and ZIP64 archives are refused or skipped.
 //  - Only "stored" (0) and "deflate" (8) compression is supported (what GitHub produces).
@@ -96,8 +102,20 @@ export function openZip(buf, { maxEntries = ZIP_LIMITS.maxEntries } = {}) {
     entries.push({ path, size, compressedSize, method, offset });
   }
 
+  // Compressed data must lie before the central directory and must not overlap. Each entry
+  // takes at least 30 bytes of local header plus its compressed size, which gives a lower
+  // bound that any legitimate archive satisfies.
+  const bySpan = [...entries].sort((a, b) => a.offset - b.offset);
+  for (let i = 0; i < bySpan.length; i++) {
+    const e = bySpan[i];
+    if (e.offset + 30 + e.compressedSize > cdOffset) throw new ZipError("The zip file is corrupt (file data overlaps the directory).");
+    if (i > 0 && e.offset < bySpan[i - 1].offset + 30 + bySpan[i - 1].compressedSize) {
+      throw new ZipError("The zip file has overlapping entries and was refused.");
+    }
+  }
+
   // Read one entry fully into memory, never producing more than maxBytes.
-  function read(entry, { maxBytes = ZIP_LIMITS.maxEntryBytes } = {}) {
+  async function read(entry, { maxBytes = ZIP_LIMITS.maxEntryBytes } = {}) {
     if (entry.size > maxBytes) throw new ZipError(`"${entry.path}" is larger than the ${maxBytes}-byte limit.`);
     const o = entry.offset;
     if (o + 30 > buf.length || buf.readUInt32LE(o) !== SIG_LOC) throw new ZipError("The zip file is corrupt (bad file header).");
@@ -111,7 +129,7 @@ export function openZip(buf, { maxEntries = ZIP_LIMITS.maxEntries } = {}) {
       out = Buffer.from(raw);
     } else {
       try {
-        out = inflateRawSync(raw, { maxOutputLength: maxBytes });
+        out = await inflateRawAsync(raw, { maxOutputLength: maxBytes });
       } catch (err) {
         if (err?.code === "ERR_BUFFER_TOO_LARGE") throw new ZipError(`"${entry.path}" expands beyond the size limit.`);
         throw new ZipError("The zip file is corrupt (bad compressed data).");
