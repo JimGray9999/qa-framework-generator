@@ -247,7 +247,7 @@ end-to-end with passing tests on Sauce Demo.
 
 ## Security audit — remaining work
 
-Items completed are on `sec/auth-and-path-traversal` (PR open). Items below are still outstanding.
+Only C3 is outstanding.
 
 ### ✅ Done
 - [x] **C1** Bind Express to `127.0.0.1`; lock CORS to Vite origin; per-process bearer token + `/api/session` bootstrap
@@ -259,18 +259,21 @@ Items completed are on `sec/auth-and-path-traversal` (PR open). Items below are 
 - [x] **L5** `/api/generate` validates `language`/`framework` against the known matrix and canonicalises the URL (`normalizeGenerateInput`).
 - [x] **H4** Rate limiting via in-house `middleware/rateLimit.js` (per-IP fixed window, separate bucket per route group): `/api/agents/*` 15/min, `/api/generate` 10/min, `/api/run-tests` 5/min. Env overrides: `QAFG_{AGENT,GENERATE,RUNTESTS}_RATE_MAX` and `_RATE_WINDOW_MS` (validated by `config.js`: positive integers, window up to 2^31-1 ms; invalid values warn and fall back to the defaults). Routing is case-sensitive and the limiters sit behind `requireAuth`. Concurrent test runs are capped separately (`middleware/concurrencyGate.js`, `QAFG_MAX_CONCURRENT_RUNS`, default 2): extra requests get a 429. Every run executes under one deadline (`processScope.js`, `QAFG_RUN_TIMEOUT_MS`, default 20 min, covering install/download/build/test for every stack). Subprocesses are tracked per run (process group on POSIX, `taskkill /T` on Windows); on deadline, failure or timeout the whole tree is killed and reaped before the slot is released, and a cancelled run cannot start new processes. A run whose client disconnects keeps its slot until it finishes or hits the deadline. Windows tree-kill is untested.
 
+- [x] **H3** API key moved to `sessionStorage` (`src/settingsStorage.js`; provider and flags stay in `localStorage`); a key left in `localStorage` by an older version is migrated out; the settings dialog warns when the page is not served from localhost. The dialog's draft lives in component state and is discarded when it closes without saving.
+- [x] **M1** Security headers with a strict CSP (`middleware/securityHeaders.js`, in-house so no new dependency; `helmet` is an option once installable). `style-src` keeps `'unsafe-inline'` for React inline styles; `script-src` is `'self'` only. Not exercised against a production build in a browser.
+- [x] **M5** `/api/providers` no longer returns a raw error message (the rest were done earlier); a test fails if a route answers with `error.message`.
+- [x] **M6** Startup key-status logs and content-bearing logs (raw model response, received file list, requirements content) are gated behind `DEBUG=qafg:*` (`debug.js`). Operational logs are unchanged.
+- [x] **L3** `archiver` errors no longer throw inside an event callback: a clean 500 if nothing was sent, else the connection is dropped.
+- [x] **L4** `detectProviders()` caches the `claude --version` probe for 30 s and shares one in-flight probe.
+- [x] **L6** No `dangerouslySetInnerHTML`, `innerHTML`, `eval` or similar in `src/`; `tests/security.test.js` fails if one appears.
+
+Tests: `npm test` (node's built-in runner, `tests/*.test.js`).
+
 ### 🔲 To do
 
 | ID | Severity | Item |
 |----|----------|------|
 | C3 | Critical | **Sandbox test execution** — run each language subprocess in a Docker container (`--network=none` for test phase, network only for install/browser-download phase). Blocks true public deployment. |
-| H3 | High | **API key storage** — move from `localStorage` to `sessionStorage`; warn user if page is not on `localhost`; scrub key from state on modal close without save. |
-| M1 | Medium | **Helmet** — add `helmet()` middleware with a strict CSP for production builds. |
-| M5 | Medium | **Error message sanitisation** — done for `/api/generate` and the agent routes; audit the remaining `res.status(500).json({ error: error.message })` calls (e.g. `/api/providers`, `/api/download-zip`) and replace with generic messages; log real errors server-side only. |
-| M6 | Medium | **Debug log cleanup** — gate `console.log("Anthropic API key: ✓ loaded")` and similar startup logs behind `DEBUG=qafg:*`. |
-| L3 | Low | **`archiver` error safety** — `archive.on('error')` re-throws inside an async callback; wrap to respond cleanly instead of crashing the process. |
-| L4 | Low | **Cache provider detection** — `detectProviders()` spawns `claude --version` on every `/api/providers` poll; cache result for 30 s. |
-| L6 | Low | **File viewer XSS audit** — confirm no `dangerouslySetInnerHTML` or unsanitised render of generated file content in the React viewer; add a test assertion. |
 
 ---
 

@@ -2,13 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useFrameworkStorage } from './useFrameworkStorage';
 import AgentPipeline from './AgentPipeline';
 
-const loadSettings = () => {
-  try {
-    const raw = localStorage.getItem('qafg.settings');
-    if (raw) return JSON.parse(raw);
-  } catch (e) {}
-  return { provider: 'claude-local', apiKey: '' };
-};
+import { loadSettings as loadStoredSettings, saveSettings as saveStoredSettings, isLocalHost } from './settingsStorage';
+
+// API key in sessionStorage, everything else in localStorage (audit H3; see settingsStorage.js).
+const loadSettings = () => loadStoredSettings(localStorage, sessionStorage);
 
 // ─── Inline SVG icons ─────────────────────────────────────────────────────────
 
@@ -178,7 +175,7 @@ const QAFrameworkGenerator = () => {
 
   const saveSettings = (next) => {
     setSettings(next);
-    localStorage.setItem('qafg.settings', JSON.stringify(next));
+    saveStoredSettings(next, localStorage, sessionStorage);
   };
 
   const [isGenerating, setIsGenerating] = useState(false);
@@ -1150,7 +1147,7 @@ const SettingsModal = ({ settings, providerStatus, onSave, onClose }) => {
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#111316', border: '1px solid rgba(99,102,241,0.35)', borderRadius: '12px', padding: '28px', width: '520px', maxWidth: '90vw', color: '#e4e4e7', fontFamily: "'Inter', sans-serif" }}>
         <h2 style={{ margin: '0 0 10px 0', color: '#a5b4fc', fontSize: '1.1rem' }}>⚙ Settings</h2>
         <p style={{ color: '#71717a', fontSize: '0.8rem', margin: '0 0 8px 0', lineHeight: 1.5 }}>
-          Choose which AI generates your test framework. API keys are stored locally in your browser only.
+          Choose which AI generates your test framework. API keys are kept in this browser tab only (cleared when the tab closes).
         </p>
 
         <label style={{ display: 'block', marginTop: '16px', fontSize: '0.75rem', color: '#71717a', textTransform: 'uppercase', letterSpacing: '.06em' }}>AI Provider</label>
@@ -1215,6 +1212,11 @@ const SettingsModal = ({ settings, providerStatus, onSave, onClose }) => {
               style={{ width: '100%', marginTop: '6px', padding: '10px', background: 'rgba(255,255,255,.04)', color: '#e4e4e7', border: `1px solid ${saveError ? 'rgba(239,68,68,.6)' : 'rgba(255,255,255,.1)'}`, borderRadius: '8px', fontFamily: "'Inter', sans-serif", fontSize: '0.85rem', boxSizing: 'border-box', outline: 'none' }}
             />
             {saveError && <div style={{ marginTop: '8px', fontSize: '0.78rem', color: '#f87171' }}>{saveError}</div>}
+            {!isLocalHost(window.location.hostname) && (
+              <div style={{ marginTop: '8px', fontSize: '0.78rem', color: '#fbbf24', lineHeight: 1.5 }}>
+                Warning: this page is not served from localhost. Anyone who controls this site or the network path to it can read a key entered here. Use a key you can revoke, or run the app locally.
+              </div>
+            )}
           </>
         )}
 

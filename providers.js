@@ -189,13 +189,26 @@ export async function generateWithProvider({ provider, apiKey, userPrompt, model
   }
 }
 
-export async function detectProviders() {
-  const claudeLocal = await new Promise((resolve) => {
+// `claude --version` is a process spawn, and the UI polls this route, so the probe result is cached
+// for 30 s (audit L4). Concurrent callers share one in-flight probe. Key flags are read fresh.
+const DETECT_TTL_MS = 30_000;
+let claudeProbe = null; // { at, promise }
+export function clearProviderCache() { claudeProbe = null; }
+
+function probeClaude() {
+  return new Promise((resolve) => {
     const bin = resolveClaudeBin();
     const proc = spawnClaude(bin, ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
     proc.on("error", () => resolve(false));
     proc.on("close", (code) => resolve(code === 0));
   });
+}
+
+export async function detectProviders() {
+  if (!claudeProbe || Date.now() - claudeProbe.at >= DETECT_TTL_MS) {
+    claudeProbe = { at: Date.now(), promise: probeClaude() };
+  }
+  const claudeLocal = await claudeProbe.promise;
   return {
     "claude-local": { available: claudeLocal, requiresKey: false, label: "Claude (Local CLI)" },
     "anthropic-api": { available: true, requiresKey: true, hasEnvKey: !!process.env.ANTHROPIC_API_KEY, label: "Anthropic API (Claude)" },
