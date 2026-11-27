@@ -189,13 +189,46 @@ export async function generateWithProvider({ provider, apiKey, userPrompt, model
   }
 }
 
-export async function detectProviders() {
-  const claudeLocal = await new Promise((resolve) => {
+// `claude --version` is a process spawn, and the UI polls this route, so the probe result is cached
+// for 30 s (audit L4). Concurrent callers share one in-flight probe. Key flags are read fresh.
+// `claude --version` is a process spawn, and the UI polls this route, so the result is cached for 30 s
+// (audit L4). The 30 s starts when a probe FINISHES, and one pending probe is shared by every caller
+// until it settles, so a slow CLI can never cause a second spawn. The probe is bounded: a CLI that
+// hangs is killed (with anything it started) and reported unavailable.
+const DETECT_TTL_MS = 30_000;
+let claudeCache = null;   // { at, value }: the last finished probe
+let claudePending = null; // the probe in flight, shared
+export function clearProviderCache() { claudeCache = null; claudePending = null; }
+
+function probeClaude() {
+  return new Promise((resolve) => {
     const bin = resolveClaudeBin();
-    const proc = spawnClaude(bin, ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
-    proc.on("error", () => resolve(false));
-    proc.on("close", (code) => resolve(code === 0));
+    const timeoutMs = envInt("QAFG_PROBE_TIMEOUT_MS", 10_000, { max: MAX_TIMER_MS });
+    const proc = spawnClaude(bin, ["--version"], { stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+    markOwnGroup(proc);
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; clearTimeout(timer); resolve(v); } };
+    const timer = setTimeout(() => { killTree(proc).then(() => finish(false)); }, timeoutMs);
+    proc.on("error", () => finish(false));
+    proc.on("close", (code) => finish(code === 0));
   });
+}
+
+async function claudeAvailable(probe) {
+  if (claudeCache && Date.now() - claudeCache.at < DETECT_TTL_MS) return claudeCache.value;
+  if (!claudePending) {
+    const pending = new Promise((resolve) => resolve(probe())).catch(() => false).then((value) => {
+      claudeCache = { at: Date.now(), value };
+      return value;
+    }).finally(() => { if (claudePending === pending) claudePending = null; });
+    claudePending = pending;
+  }
+  return claudePending;
+}
+
+// `probe` can be replaced in tests.
+export async function detectProviders({ probe = probeClaude } = {}) {
+  const claudeLocal = await claudeAvailable(probe);
   return {
     "claude-local": { available: claudeLocal, requiresKey: false, label: "Claude (Local CLI)" },
     "anthropic-api": { available: true, requiresKey: true, hasEnvKey: !!process.env.ANTHROPIC_API_KEY, label: "Anthropic API (Claude)" },

@@ -18,6 +18,8 @@ import { extractJSON } from "./agents/json.js";
 import { normalizeRequest, normalizeGenerateInput, agentError } from "./agents/catalog.js";
 import { validateGeneratedFiles, resolveGeneratedPath } from "./agents/generated.js";
 import { redact } from "./repo/digest.js";
+import { debugLog } from "./debug.js";
+import { securityHeaders } from "./middleware/securityHeaders.js";
 import { runIntake } from "./agents/intake.js";
 import { runTestPlanner } from "./agents/testPlanner.js";
 import { runArchitect, validateArchitecture } from "./agents/architect.js";
@@ -33,10 +35,11 @@ const __dirname = dirname(__filename);
 dotenv.config({ path: join(__dirname, '.env') });
 
 // Debug: Check if API keys are loaded
-console.log("Anthropic API key:", process.env.ANTHROPIC_API_KEY ? "✓ loaded from env" : "not set (optional)");
-console.log("OpenAI API key:", process.env.OPENAI_API_KEY ? "✓ loaded from env" : "not set (optional)");
+debugLog("Anthropic API key:", process.env.ANTHROPIC_API_KEY ? "✓ loaded from env" : "not set (optional)");
+debugLog("OpenAI API key:", process.env.OPENAI_API_KEY ? "✓ loaded from env" : "not set (optional)");
 
 const app = express();
+app.use(securityHeaders());
 
 // Express matches routes case-insensitively by default, which would let `/API/...`
 // reach a route while the auth check below only looked at lowercase `/api/`.
@@ -562,7 +565,8 @@ app.get("/api/providers", async (req, res) => {
     const providers = await detectProviders();
     res.json({ providers });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error("Provider detection failed:", error);
+    res.status(500).json({ error: 'Could not detect providers. Check the server log.' });
   }
 });
 
@@ -608,7 +612,7 @@ Use \\n for newlines, \\" for quotes. Output ONLY valid JSON.`;
     console.log(`Generating via provider: ${provider || "anthropic-api"}`);
     // A prompt that contains text from a live page is untrusted: tool-free session for the local CLI.
     const text = await generateWithProvider({ provider, apiKey, userPrompt, isolated: ISOLATE_LIVE_PAGES && pageData.fetched });
-    console.log("Raw response:", text.substring(0, 200));
+    debugLog("Raw response:", text.substring(0, 200));
 
     let parsed;
     try {
@@ -831,8 +835,17 @@ app.post("/api/download-zip", async (req, res) => {
 
     const archive = archiver('zip', { zlib: { level: 9 } });
 
+    // An archiver error arrives as an event, so throwing here would be an uncaught exception that
+    // takes the process down (audit L3). Answer cleanly if nothing was sent, else drop the connection.
     archive.on('error', (err) => {
-      throw err;
+      console.error("ZIP error:", err);
+      if (!res.headersSent) {
+        res.removeHeader('Content-Type');
+        res.removeHeader('Content-Disposition');
+        res.status(500).json({ error: 'Could not create the zip.' });
+      } else {
+        res.destroy();
+      }
     });
 
     archive.pipe(res);
@@ -874,7 +887,7 @@ app.post("/api/run-tests", async (req, res) => {
   // Detect language
   const language = detectLanguage(files);
   console.log("Detected language:", language);
-  console.log("Files received:", files.map(f => ({ name: f.name, path: f.path })));
+  debugLog("Files received:", files.map(f => ({ name: f.name, path: f.path })));
 
   // Static safety scan before touching the filesystem
   try {
@@ -1021,7 +1034,7 @@ async function runPythonTests(tempDir, files, selectedBrowser, headed, slowMoMs,
   // Log requirements.txt content for debugging
   const reqFile = files.find(f => f.name === 'requirements.txt' || f.name.endsWith('requirements.txt'));
   if (reqFile) {
-    console.log("Requirements content:", reqFile.content);
+    debugLog("Requirements content:", reqFile.content);
   }
 
   // Install dependencies using venv pip

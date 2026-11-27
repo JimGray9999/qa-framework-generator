@@ -12,7 +12,8 @@
     "start": "NODE_ENV=production node server.js",
     "docker:build": "docker compose build",
     "docker:up": "docker compose up",
-    "docker:down": "docker compose down"
+    "docker:down": "docker compose down",
+    "test": "node --test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
